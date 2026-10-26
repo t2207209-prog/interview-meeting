@@ -101,6 +101,11 @@ input:focus {
   margin-top: 14px;
 }
 
+.actions button {
+  flex: 1 1 calc(50% - 10px);
+  min-width: 140px;
+}
+
 button {
   appearance: none;
   border: 0;
