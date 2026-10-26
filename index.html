@@ -13,9 +13,7 @@
         <p class="eyebrow">Interview Meeting MVP</p>
         <h1>单窗口嵌入腾讯会议 Web</h1>
         <p class="lead">
-          左侧业务区 · 右侧内嵌
-          <code>meeting.tencent.com</code>
-          · 同一系统窗口
+          右侧内嵌官网页面。注意：大陆官网「加入」默认唤起客户端，不是完整网页会议室。
         </p>
       </header>
 
@@ -30,19 +28,21 @@
           required
         />
         <div class="actions">
-          <button type="submit" id="join-btn">在右侧入会</button>
+          <button type="submit" id="join-btn">打开邀请链接页</button>
+          <button type="button" id="center-btn" class="secondary">打开用户中心入会</button>
+          <button type="button" id="native-btn" class="secondary">允许唤起客户端一次</button>
           <button type="button" id="home-btn" class="secondary">回到会议首页</button>
         </div>
         <p id="status" class="status" role="status"></p>
       </form>
 
       <section class="notes">
-        <h2>使用说明</h2>
+        <h2>为什么会闪一下又回来？</h2>
         <ol>
-          <li>输入会议号后点「在右侧入会」，右侧加载官方入会页。</li>
-          <li>右侧再点「加入会议」时，客户端协议 <code>wemeet://</code> 会被拦截，并尽量自动切到网页入会（可能需要先登录腾讯会议账号）。</li>
-          <li>若仍停在引导页，请手动点「浏览器入会 / 从浏览器加入」。</li>
-          <li>摄像头 / 麦克风权限已在右侧视图中默认允许（仍可能弹出系统授权）。</li>
+          <li>右侧点「加入」→ 进入「启动中…」→ 尝试 <code>wemeet://</code> 打开本机客户端。</li>
+          <li>本应用默认拦截该协议，客户端拉不起来，页面又退回入会表单，看起来像闪烁。</li>
+          <li>若只想先完成入会验证：点「允许唤起客户端一次」，再在右侧点「加入」（会跳出独立窗口）。</li>
+          <li>若要坚持单窗口内音视频：需要腾讯会议开放平台 / 官方 SDK，不能只靠嵌网页。</li>
         </ol>
       </section>
     </div>
