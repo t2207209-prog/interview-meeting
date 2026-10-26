@@ -3,57 +3,32 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>监考守卫</title>
+    <title>监考栏</title>
     <link rel="stylesheet" href="/src/guard.css" />
     <script type="module" src="/src/guard.ts" defer></script>
   </head>
-  <body>
-    <div class="panel">
-      <header>
-        <p class="eyebrow">Interview3S MVP</p>
-        <h1>监考守卫</h1>
-        <p class="lead">主窗口加载远程入会页；音视频使用本机腾讯会议。守卫只允许这两个进程处于前台。</p>
-      </header>
+  <body class="toolbar-body">
+    <div class="toolbar">
+      <div class="brand">
+        <strong>Interview3S</strong>
+        <span id="enabled-text" class="pill">—</span>
+      </div>
 
-      <section class="card">
-        <div class="row">
-          <span>守卫状态</span>
-          <strong id="enabled-text">—</strong>
-        </div>
-        <div class="row">
-          <span>切屏次数</span>
-          <strong id="violations">0</strong>
-        </div>
-        <div class="row">
-          <span>当前前台</span>
-          <strong id="foreground">—</strong>
-        </div>
-        <div class="row">
-          <span>窗口标题</span>
-          <strong id="title" class="muted">—</strong>
-        </div>
-        <div class="row">
-          <span>显示器数量</span>
-          <strong id="monitors">1</strong>
-        </div>
-        <p id="hint" class="hint"></p>
-      </section>
+      <div class="metrics">
+        <span>切屏 <strong id="violations">0</strong></span>
+        <span>前台 <strong id="foreground">—</strong></span>
+        <span>屏数 <strong id="monitors">1</strong></span>
+        <span class="title-snip" id="title" title="">—</span>
+      </div>
 
-      <section class="actions">
-        <button id="toggle-guard" type="button">开启守卫</button>
-        <button id="toggle-pull" type="button" class="secondary">强拉回前台：开</button>
+      <div class="toolbar-actions">
+        <button id="toggle-guard" type="button">关闭守卫</button>
+        <button id="toggle-pull" type="button" class="secondary">强拉：关</button>
         <button id="tile" type="button" class="secondary">与腾讯会议分屏</button>
-        <button id="topmost" type="button" class="secondary">业务窗置顶：开</button>
-      </section>
-
-      <section class="notes">
-        <ol>
-          <li>主窗口已打开远程入会页；在页面内点入会可唤起本机腾讯会议。</li>
-          <li>先进入腾讯会议，再点「与腾讯会议分屏」。</li>
-          <li>Alt+Tab / 点开微信等会被记为切屏；可选择是否强拉回业务窗。</li>
-        </ol>
-      </section>
-      <p id="status" class="status"></p>
+        <button id="topmost" type="button" class="secondary">置顶：开</button>
+      </div>
     </div>
+    <p id="hint" class="hint bar-hint"></p>
+    <p id="status" class="status bar-status"></p>
   </body>
 </html>

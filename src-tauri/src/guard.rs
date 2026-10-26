@@ -194,7 +194,7 @@ pub fn start_guard_loop(app: AppHandle, state: GuardState) {
                 let _ = app.emit("guard://status", &status);
 
                 if pull_back {
-                    if let Some(main) = app.get_webview_window("main") {
+                    if let Some(main) = app.get_window("main") {
                         let _ = main.set_focus();
                         if let Ok(hwnd_main) = main.hwnd() {
                             SetForegroundWindow(hwnd_main.0 as isize as HWND);
@@ -285,7 +285,7 @@ pub fn tile_with_tencent_meeting(app: &AppHandle) -> Result<String, String> {
             SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSIZE | SWP_NOMOVE,
         );
 
-        if let Some(main) = app.get_webview_window("main") {
+        if let Some(main) = app.get_window("main") {
             let _ = main.set_always_on_top(true);
             let scale = main.scale_factor().unwrap_or(1.0);
             let _ = main.set_position(tauri::LogicalPosition::new(
@@ -310,14 +310,14 @@ pub fn tile_with_tencent_meeting(app: &AppHandle) -> Result<String, String> {
         }
 
         Ok(format!(
-            "已分屏：业务窗约 58% 左侧，腾讯会议约 42% 右侧（找到 {} 个会议窗口）",
+            "已分屏：左侧本应用约 58%，右侧腾讯会议约 42%（找到 {} 个会议窗口）",
             data.handles.len()
         ))
     }
 }
 
 pub fn set_main_topmost(app: &AppHandle, topmost: bool) -> Result<(), String> {
-    if let Some(main) = app.get_webview_window("main") {
+    if let Some(main) = app.get_window("main") {
         main.set_always_on_top(topmost)
             .map_err(|e| e.to_string())?;
     }

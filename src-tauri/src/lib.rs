@@ -1,11 +1,29 @@
 mod guard;
 
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    webview::WebviewBuilder, LogicalPosition, LogicalSize, Manager, WebviewUrl, WindowEvent,
+};
 use url::Url;
 
-/// Default remote join page for this MVP.
 const DEFAULT_JOIN_URL: &str =
     "https://ms.symsun.com/interview3s-web/views/interview/meeting/meeting_join.html?token=inv-c507cc8aca8a448d";
+
+/// Compact guard toolbar height (logical px).
+const CHROME_H: f64 = 84.0;
+
+fn layout_main(window: &tauri::Window, width: f64, height: f64) {
+    let chrome_h = CHROME_H.min(height * 0.35).max(64.0);
+    let biz_h = (height - chrome_h).max(120.0);
+
+    if let Some(chrome) = window.get_webview("chrome") {
+        let _ = chrome.set_position(LogicalPosition::new(0.0, 0.0));
+        let _ = chrome.set_size(LogicalSize::new(width, chrome_h));
+    }
+    if let Some(biz) = window.get_webview("biz") {
+        let _ = biz.set_position(LogicalPosition::new(0.0, chrome_h));
+        let _ = biz.set_size(LogicalSize::new(width, biz_h));
+    }
+}
 
 #[tauri::command]
 fn get_guard_status(state: tauri::State<'_, guard::GuardState>) -> guard::GuardStatus {
@@ -45,7 +63,7 @@ fn set_main_topmost(app: tauri::AppHandle, topmost: bool) -> Result<(), String> 
     }
     #[cfg(not(windows))]
     {
-        if let Some(main) = app.get_webview_window("main") {
+        if let Some(main) = app.get_window("main") {
             main.set_always_on_top(topmost).map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -67,42 +85,46 @@ pub fn run() {
             set_main_topmost
         ])
         .setup(move |app| {
+            let width = 1180.0;
+            let height = 860.0;
             let join_url = Url::parse(DEFAULT_JOIN_URL).expect("valid join url");
 
-            let main = WebviewWindowBuilder::new(
-                app,
-                "main",
-                WebviewUrl::External(join_url),
-            )
-            .title("Interview3S 入会")
-            .inner_size(1100.0, 820.0)
-            .min_inner_size(800.0, 600.0)
-            .on_navigation(|url| {
-                // Dual-window mode: allow native Tencent Meeting protocol launches.
-                let _ = url;
-                true
-            })
-            .build()?;
+            let window = tauri::window::WindowBuilder::new(app, "main")
+                .title("Interview3S")
+                .inner_size(width, height)
+                .min_inner_size(900.0, 640.0)
+                .build()?;
 
-            let _ = main;
+            let chrome_h = CHROME_H;
+            let biz_h = height - chrome_h;
 
-            let _guard_win = WebviewWindowBuilder::new(
-                app,
-                "guard",
-                WebviewUrl::App("guard.html".into()),
-            )
-            .title("监考守卫")
-            .inner_size(380.0, 520.0)
-            .resizable(true)
-            .always_on_top(true)
-            .build()?;
+            let _chrome = window.add_child(
+                WebviewBuilder::new("chrome", WebviewUrl::App("guard.html".into())),
+                LogicalPosition::new(0.0, 0.0),
+                LogicalSize::new(width, chrome_h),
+            )?;
+
+            let _biz = window.add_child(
+                WebviewBuilder::new("biz", WebviewUrl::External(join_url)).on_navigation(|_| true),
+                LogicalPosition::new(0.0, chrome_h),
+                LogicalSize::new(width, biz_h),
+            )?;
+
+            let window_for_events = window.clone();
+            window.on_window_event(move |event| {
+                if let WindowEvent::Resized(size) = event {
+                    let scale = window_for_events.scale_factor().unwrap_or(1.0);
+                    let logical = size.to_logical::<f64>(scale);
+                    layout_main(&window_for_events, logical.width, logical.height);
+                }
+            });
 
             #[cfg(windows)]
             {
                 guard::start_guard_loop(app.handle().clone(), guard_state.clone());
-                // Start armed by default for MVP demo.
+                // Record切屏 by default; do not yank focus until user enables pull-back.
                 guard_state.set_enabled(true);
-                guard_state.set_pull_back(true);
+                guard_state.set_pull_back(false);
             }
 
             Ok(())

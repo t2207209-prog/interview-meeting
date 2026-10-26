@@ -23,8 +23,8 @@ const togglePullBtn = document.querySelector<HTMLButtonElement>("#toggle-pull");
 const tileBtn = document.querySelector<HTMLButtonElement>("#tile");
 const topmostBtn = document.querySelector<HTMLButtonElement>("#topmost");
 
-let pullBack = true;
-let topmost = true;
+let pullBack = false;
+let topmost = false;
 let enabled = true;
 
 function setStatus(msg: string, isError = false) {
@@ -36,29 +36,32 @@ function setStatus(msg: string, isError = false) {
 function render(s: GuardStatus) {
   enabled = !!s.enabled;
   pullBack = !!s.pullBack;
-  if (enabledText) enabledText.textContent = enabled ? "已开启" : "已关闭";
+  if (enabledText) enabledText.textContent = enabled ? "守卫开" : "守卫关";
   if (violationsEl) violationsEl.textContent = String(s.violations ?? 0);
   if (foregroundEl) {
     foregroundEl.textContent = s.lastProcess || "—";
     foregroundEl.dataset.bad = s.foregroundAllowed ? "0" : "1";
   }
-  if (titleEl) titleEl.textContent = s.lastTitle || "—";
+  if (titleEl) {
+    titleEl.textContent = s.lastTitle || "—";
+    titleEl.title = s.lastTitle || "";
+  }
   if (monitorsEl) monitorsEl.textContent = String(s.monitorCount ?? 1);
   if (hintEl) {
     if ((s.monitorCount ?? 1) > 1) {
-      hintEl.textContent = "检测到多显示器，建议面试时只保留一块屏幕。";
+      hintEl.textContent = "多显示器：建议只保留一块屏幕。";
       hintEl.dataset.warn = "1";
     } else if (!s.foregroundAllowed && enabled) {
-      hintEl.textContent = "当前前台不在白名单（业务窗 / 腾讯会议）。";
+      hintEl.textContent = "前台不在白名单（本应用 / 腾讯会议）。";
       hintEl.dataset.warn = "1";
     } else {
-      hintEl.textContent = "白名单：本应用 + 腾讯会议相关进程。";
+      hintEl.textContent = "上栏监考 · 下栏入会页 · 可与腾讯会议左右分屏";
       hintEl.dataset.warn = "0";
     }
   }
   if (toggleGuardBtn) toggleGuardBtn.textContent = enabled ? "关闭守卫" : "开启守卫";
-  if (togglePullBtn) togglePullBtn.textContent = `强拉回前台：${pullBack ? "开" : "关"}`;
-  if (topmostBtn) topmostBtn.textContent = `业务窗置顶：${topmost ? "开" : "关"}`;
+  if (togglePullBtn) togglePullBtn.textContent = `强拉：${pullBack ? "开" : "关"}`;
+  if (topmostBtn) topmostBtn.textContent = `置顶：${topmost ? "开" : "关"}`;
 }
 
 async function refresh() {
@@ -90,8 +93,8 @@ async function boot() {
     topmost = !topmost;
     try {
       await invoke("set_main_topmost", { topmost });
-      if (topmostBtn) topmostBtn.textContent = `业务窗置顶：${topmost ? "开" : "关"}`;
-      setStatus(topmost ? "业务窗已置顶" : "已取消业务窗置顶");
+      if (topmostBtn) topmostBtn.textContent = `置顶：${topmost ? "开" : "关"}`;
+      setStatus(topmost ? "窗口已置顶" : "已取消置顶");
     } catch (e) {
       setStatus(String(e), true);
     }
@@ -101,11 +104,11 @@ async function boot() {
   await listen<GuardStatus>("guard://status", (ev) => render(ev.payload));
   await listen<GuardStatus>("guard://violation", (ev) => {
     render(ev.payload);
-    setStatus(`切屏记录 +1：${ev.payload.lastProcess || "未知进程"}`, true);
+    setStatus(`切屏 +1：${ev.payload.lastProcess || "未知"}`, true);
   });
   setInterval(() => {
     void refresh();
-  }, 2000);
+  }, 1500);
 }
 
 void boot();
