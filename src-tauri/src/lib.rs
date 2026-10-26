@@ -65,7 +65,7 @@ fn reload_meeting_home(app: AppHandle) -> Result<(), String> {
     meet.navigate(url).map_err(|e| e.to_string())
 }
 
-fn build_meet_webview(url: WebviewUrl) -> WebviewBuilder {
+fn build_meet_webview(url: WebviewUrl) -> WebviewBuilder<tauri::Wry> {
     WebviewBuilder::new("meet", url)
         .on_navigation(|nav_url| {
             let scheme = nav_url.scheme();
