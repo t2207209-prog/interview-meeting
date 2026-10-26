@@ -1,10 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the split-view main window",
-  "windows": ["main", "biz", "meet"],
+  "description": "Capabilities for join page + guard panel",
+  "windows": ["main", "guard"],
   "permissions": [
     "core:default",
+    "core:event:default",
+    "core:webview:default",
+    "core:window:default",
     "opener:default"
   ]
 }
