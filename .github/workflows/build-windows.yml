@@ -1,0 +1,52 @@
+name: Build Windows MVP
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app (Windows NSIS)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: .
+          uploadWorkflowArtifacts: true
+          uploadPlainBinary: true
+          workflowArtifactNamePattern: interview-meeting-windows
+          args: --bundles nsis
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: interview-meeting-windows-nsis
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/interview-meeting.exe
+          if-no-files-found: warn

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Interview Meeting</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <p class="eyebrow">Interview Meeting MVP</p>
+        <h1>单窗口嵌入腾讯会议 Web</h1>
+        <p class="lead">
+          左侧业务区 · 右侧内嵌
+          <code>meeting.tencent.com</code>
+          · 同一系统窗口
+        </p>
+      </header>
+
+      <form id="join-form" class="panel">
+        <label for="meeting-id">会议号</label>
+        <input
+          id="meeting-id"
+          name="meetingId"
+          inputmode="numeric"
+          autocomplete="off"
+          placeholder="例如 123-456-789"
+          required
+        />
+        <div class="actions">
+          <button type="submit" id="join-btn">在右侧入会</button>
+          <button type="button" id="home-btn" class="secondary">回到会议首页</button>
+        </div>
+        <p id="status" class="status" role="status"></p>
+      </form>
+
+      <section class="notes">
+        <h2>使用说明</h2>
+        <ol>
+          <li>输入会议号后点「在右侧入会」，右侧 WebView 加载官方网页入会链接。</li>
+          <li>若页面提示打开客户端，请选择「直接在浏览器中入会」。</li>
+          <li>本 MVP 会拦截 <code>wemeet://</code>，避免拉起本机独立客户端窗口。</li>
+          <li>摄像头 / 麦克风权限已在右侧视图中默认允许（仍可能弹出系统授权）。</li>
+        </ol>
+      </section>
+    </div>
+  </body>
+</html>
