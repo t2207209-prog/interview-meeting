@@ -9,6 +9,8 @@ type GuardStatus = {
   lastTitle: string;
   foregroundAllowed: boolean;
   monitorCount: number;
+  layoutLocked?: boolean;
+  topmost?: boolean;
 };
 
 const enabledText = document.querySelector<HTMLElement>("#enabled-text");
@@ -36,6 +38,7 @@ function setStatus(msg: string, isError = false) {
 function render(s: GuardStatus) {
   enabled = !!s.enabled;
   pullBack = !!s.pullBack;
+  if (typeof s.topmost === "boolean") topmost = s.topmost;
   if (enabledText) enabledText.textContent = enabled ? "守卫开" : "守卫关";
   if (violationsEl) violationsEl.textContent = String(s.violations ?? 0);
   if (foregroundEl) {
@@ -48,14 +51,17 @@ function render(s: GuardStatus) {
   }
   if (monitorsEl) monitorsEl.textContent = String(s.monitorCount ?? 1);
   if (hintEl) {
-    if ((s.monitorCount ?? 1) > 1) {
+    if (s.layoutLocked) {
+      hintEl.textContent = "分屏已锁定：两窗铺满主屏高度并置顶，拖动会被拉回。";
+      hintEl.dataset.warn = "1";
+    } else if ((s.monitorCount ?? 1) > 1) {
       hintEl.textContent = "多显示器：建议只保留一块屏幕。";
       hintEl.dataset.warn = "1";
     } else if (!s.foregroundAllowed && enabled) {
       hintEl.textContent = "前台不在白名单（本应用 / 腾讯会议）。";
       hintEl.dataset.warn = "1";
     } else {
-      hintEl.textContent = "点「进入腾讯会议」将直接 wemeet:// 拉起客户端（不再进浏览器入会页）";
+      hintEl.textContent = "点「与腾讯会议分屏」后两窗铺满并锁定；关「置顶」可解除锁定。";
       hintEl.dataset.warn = "0";
     }
   }
@@ -90,11 +96,17 @@ async function boot() {
   });
 
   topmostBtn?.addEventListener("click", async () => {
-    topmost = !topmost;
+    const next = !topmost;
     try {
-      await invoke("set_main_topmost", { topmost });
+      await invoke("set_main_topmost", { topmost: next });
+      topmost = next;
       if (topmostBtn) topmostBtn.textContent = `置顶：${topmost ? "开" : "关"}`;
-      setStatus(topmost ? "窗口已置顶" : "已取消置顶");
+      setStatus(
+        topmost
+          ? "已置顶；若已分屏则同时锁定位置/高度"
+          : "已取消置顶并解除分屏锁定",
+      );
+      await refresh();
     } catch (e) {
       setStatus(String(e), true);
     }
