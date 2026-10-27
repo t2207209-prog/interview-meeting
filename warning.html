@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>监考声明</title>
+    <link rel="stylesheet" href="/src/warning.css" />
+    <script type="module" src="/src/warning.ts" defer></script>
+  </head>
+  <body>
+    <main class="warn-shell">
+      <div class="warn-panel">
+        <p class="brand">Interview3S</p>
+        <h1>请遵守监考与屏幕记录要求</h1>
+        <p class="lead">
+          本场面试全程启用防作弊监管。进入系统即表示你知悉并同意以下措施与后果。
+        </p>
+        <ul class="means">
+          <li>窗口白名单</li>
+          <li>焦点守卫</li>
+          <li>分屏锁定</li>
+          <li>定时截屏</li>
+          <li>进程列表读取</li>
+        </ul>
+        <p class="consequence">
+          一经发现作弊、协助作弊或规避监考行为，将<strong>取消面试资格</strong>，
+          <strong>成绩作废</strong>，并可能按用人单位与平台规则作进一步处理。
+        </p>
+        <p id="error" class="error" hidden></p>
+        <button id="ack" type="button">我已知晓</button>
+      </div>
+    </main>
+  </body>
+</html>
