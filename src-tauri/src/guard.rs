@@ -24,6 +24,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 const POLL_MS: u64 = 350;
 const LAYOUT_POLL_MS: u64 = 200;
+const MEET_AUTO_POLL_MS: u64 = 800;
+const MEET_APPEAR_DEBOUNCE_MS: u64 = 1200;
+/// Ignore tiny splash / tray popups when auto-detecting the main meet window.
+const MEET_MIN_W: i32 = 480;
+const MEET_MIN_H: i32 = 320;
 /// Left pane share of the primary monitor width.
 const LEFT_RATIO: f64 = 0.58;
 
@@ -404,22 +409,55 @@ struct EnumData {
     handles: Vec<HWND>,
 }
 
+unsafe fn looks_like_meet_window(hwnd: HWND) -> bool {
+    let title = window_title(hwnd);
+    let path = process_image_path(hwnd);
+    let stem = exe_stem(&path);
+    is_meet_stem(&stem)
+        || title.contains("腾讯会议")
+        || title.to_ascii_lowercase().contains("tencent meeting")
+}
+
 unsafe extern "system" fn enum_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let data = &mut *(lparam as *mut EnumData);
     if IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
         return TRUE;
     }
-    let title = window_title(hwnd);
-    let path = process_image_path(hwnd);
-    let stem = exe_stem(&path);
-    let looks_like_meet = stem.contains("wemeet")
-        || stem.contains("tencentmeeting")
-        || title.contains("腾讯会议")
-        || title.to_ascii_lowercase().contains("tencent meeting");
-    if looks_like_meet {
-        data.handles.push(hwnd);
+    if !looks_like_meet_window(hwnd) {
+        return TRUE;
     }
+    if let Some(r) = current_rect(hwnd) {
+        let w = r.right - r.left;
+        let h = r.bottom - r.top;
+        // Skip tiny splash / notification chrome.
+        if w < MEET_MIN_W || h < MEET_MIN_H {
+            return TRUE;
+        }
+    }
+    data.handles.push(hwnd);
     TRUE
+}
+
+unsafe fn find_meet_windows() -> Vec<HWND> {
+    let mut data = EnumData {
+        handles: Vec::new(),
+    };
+    EnumWindows(Some(enum_callback), &mut data as *mut EnumData as isize);
+    data.handles
+}
+
+/// Prefer the largest visible meeting window as the main pane.
+unsafe fn pick_main_meet(handles: &[HWND]) -> Option<HWND> {
+    let mut best: Option<(HWND, i64)> = None;
+    for &hwnd in handles {
+        if let Some(r) = current_rect(hwnd) {
+            let area = (r.right as i64 - r.left as i64) * (r.bottom as i64 - r.top as i64);
+            if best.map(|(_, a)| area > a).unwrap_or(true) {
+                best = Some((hwnd, area));
+            }
+        }
+    }
+    best.map(|(h, _)| h)
 }
 
 fn split_rects(monitor: RECT) -> (RECT, RECT) {
@@ -442,18 +480,13 @@ fn split_rects(monitor: RECT) -> (RECT, RECT) {
 
 pub fn tile_with_tencent_meeting(app: &AppHandle, state: &GuardState) -> Result<String, String> {
     unsafe {
-        let mut data = EnumData {
-            handles: Vec::new(),
-        };
-        EnumWindows(Some(enum_callback), &mut data as *mut EnumData as isize);
-
-        if data.handles.is_empty() {
+        let handles = find_meet_windows();
+        let Some(meet) = pick_main_meet(&handles) else {
             return Err("未找到腾讯会议窗口，请先打开并进入会议".into());
-        }
+        };
 
         let monitor = primary_monitor_rect();
         let (left_rect, right_rect) = split_rects(monitor);
-        let meet = data.handles[0];
 
         let Some(main) = app.get_window("main") else {
             return Err("主窗口未就绪".into());
@@ -489,9 +522,111 @@ pub fn tile_with_tencent_meeting(app: &AppHandle, state: &GuardState) -> Result<
 
         Ok(format!(
             "已锁定分屏并置顶：铺满主屏、禁止拖动/最小化（会议窗 {} 个）",
-            data.handles.len()
+            handles.len()
         ))
     }
+}
+
+/// Clear lock / topmost (used when Tencent Meeting exits).
+pub fn release_layout_lock(app: &AppHandle, state: &GuardState) -> Result<(), String> {
+    let Some(main) = app.get_window("main") else {
+        return Err("主窗口未就绪".into());
+    };
+    let _ = main.set_always_on_top(false);
+    let _ = main.set_minimizable(true);
+
+    let (main_pane, meet_pane) = {
+        let mut g = state.inner.lock();
+        g.topmost = false;
+        g.layout_locked = false;
+        (g.main_pane.take(), g.meet_pane.take())
+    };
+
+    unsafe {
+        let clear_topmost = |hwnd: HWND| {
+            if hwnd.is_null() || IsWindow(hwnd) == 0 {
+                return;
+            }
+            SetWindowPos(
+                hwnd,
+                HWND_NOTOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSIZE | SWP_NOMOVE,
+            );
+        };
+        if let Some(pane) = main_pane {
+            clear_topmost(pane.hwnd as HWND);
+        }
+        if let Some(pane) = meet_pane {
+            clear_topmost(pane.hwnd as HWND);
+        }
+        if let Ok(hwnd_main) = main.hwnd() {
+            clear_topmost(hwnd_main.0 as isize as HWND);
+        }
+    }
+
+    let _ = app.emit("guard://status", &state.status());
+    Ok(())
+}
+
+/// Watch Tencent Meeting: auto tile+topmost on open, release topmost on close.
+pub fn start_meet_auto_loop(app: AppHandle, state: GuardState) {
+    thread::spawn(move || {
+        let mut was_present = false;
+        loop {
+            thread::sleep(Duration::from_millis(MEET_AUTO_POLL_MS));
+
+            let handles = unsafe { find_meet_windows() };
+            let present = !handles.is_empty();
+            let (locked, meet_hwnd) = {
+                let g = state.inner.lock();
+                (g.layout_locked, g.meet_pane.map(|p| p.hwnd))
+            };
+
+            if present && !was_present {
+                // Wait for the real in-meeting frame to settle, then tile.
+                thread::sleep(Duration::from_millis(MEET_APPEAR_DEBOUNCE_MS));
+                let handles2 = unsafe { find_meet_windows() };
+                if handles2.is_empty() {
+                    was_present = false;
+                    continue;
+                }
+                match tile_with_tencent_meeting(&app, &state) {
+                    Ok(msg) => {
+                        eprintln!("[meet-auto] {msg}");
+                        let _ = app.emit("guard://auto-tiled", state.status());
+                    }
+                    Err(e) => eprintln!("[meet-auto] tile skipped: {e}"),
+                }
+                was_present = true;
+                continue;
+            } else if present && locked {
+                // Main meet HWND died (reload / replace) — retile onto the new window.
+                let dead = meet_hwnd
+                    .map(|h| unsafe { IsWindow(h as HWND) == 0 })
+                    .unwrap_or(true);
+                if dead {
+                    match tile_with_tencent_meeting(&app, &state) {
+                        Ok(msg) => eprintln!("[meet-auto] retile: {msg}"),
+                        Err(e) => eprintln!("[meet-auto] retile skipped: {e}"),
+                    }
+                }
+            } else if !present && (was_present || locked) {
+                match release_layout_lock(&app, &state) {
+                    Ok(()) => {
+                        eprintln!("[meet-auto] meeting closed → unlocked topmost");
+                        let _ = app.emit("guard://auto-released", state.status());
+                    }
+                    Err(e) => eprintln!("[meet-auto] release failed: {e}"),
+                }
+            }
+
+            was_present = present;
+        }
+    });
 }
 
 pub fn set_main_topmost(app: &AppHandle, state: &GuardState, topmost: bool) -> Result<(), String> {
@@ -516,12 +651,18 @@ pub fn set_main_topmost(app: &AppHandle, state: &GuardState, topmost: bool) -> R
 
     unsafe {
         if let Some(pane) = main_pane {
-            ensure_not_minimized(pane.hwnd as HWND);
+            if topmost {
+                ensure_not_minimized(pane.hwnd as HWND);
+            }
             force_pane(pane.hwnd as HWND, pane.rect, topmost);
         }
         if let Some(pane) = meet_pane {
-            ensure_not_minimized(pane.hwnd as HWND);
-            force_pane(pane.hwnd as HWND, pane.rect, topmost);
+            if topmost {
+                ensure_not_minimized(pane.hwnd as HWND);
+            }
+            if IsWindow(pane.hwnd as HWND) != 0 {
+                force_pane(pane.hwnd as HWND, pane.rect, topmost);
+            }
         }
         if !topmost {
             if let Ok(hwnd_main) = main.hwnd() {
