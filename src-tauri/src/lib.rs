@@ -36,10 +36,22 @@ fn layout_main(window: &tauri::Window, width: f64, height: f64) {
 }
 
 fn layout_for_state(window: &tauri::Window, width: f64, height: f64) {
-    if window.get_webview("warn").is_some() {
-        layout_warn(window, width, height);
-    } else {
+    // Prefer interview shell once it exists; never let a leftover warn cover it.
+    if window.get_webview("chrome").is_some() || window.get_webview("biz").is_some() {
         layout_main(window, width, height);
+        if let Some(warn) = window.get_webview("warn") {
+            let _ = warn.set_position(LogicalPosition::new(-10_000.0, -10_000.0));
+            let _ = warn.set_size(LogicalSize::new(0.0, 0.0));
+        }
+    } else {
+        layout_warn(window, width, height);
+    }
+}
+
+fn hide_warn_webview(window: &tauri::Window) {
+    if let Some(warn) = window.get_webview("warn") {
+        let _ = warn.set_position(LogicalPosition::new(-10_000.0, -10_000.0));
+        let _ = warn.set_size(LogicalSize::new(0.0, 0.0));
     }
 }
 
@@ -171,14 +183,15 @@ fn acknowledge_warning(
         return Err("主窗口未就绪".into());
     };
 
-    if let Some(warn) = window.get_webview("warn") {
-        warn.close().map_err(|e| e.to_string())?;
-    }
-
     let scale = window.scale_factor().unwrap_or(1.0);
     let size = window.inner_size().map_err(|e| e.to_string())?;
     let logical = size.to_logical::<f64>(scale);
+
+    // Create chrome + join page FIRST, then only hide the warning webview.
+    // Closing "warn" inside this invoke (it is the caller) deadlocks the UI:
+    // blank page and the window can no longer be closed.
     start_interview_shell(&window, logical.width, logical.height)?;
+    hide_warn_webview(&window);
     session.mark_interview_started();
 
     #[cfg(windows)]
