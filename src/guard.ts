@@ -55,7 +55,7 @@ function render(s: GuardStatus) {
       hintEl.textContent = "前台不在白名单（本应用 / 腾讯会议）。";
       hintEl.dataset.warn = "1";
     } else {
-      hintEl.textContent = "点「进入腾讯会议」会用系统打开会议链接并拉起客户端";
+      hintEl.textContent = "点「进入腾讯会议」将直接 wemeet:// 拉起客户端（不再进浏览器入会页）";
       hintEl.dataset.warn = "0";
     }
   }
