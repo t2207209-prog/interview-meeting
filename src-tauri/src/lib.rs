@@ -1,14 +1,15 @@
 mod guard;
+mod launch;
 
 use tauri::{
-    webview::WebviewBuilder, LogicalPosition, LogicalSize, Manager, WebviewUrl, WindowEvent,
+    webview::{NewWindowResponse, WebviewBuilder},
+    LogicalPosition, LogicalSize, Manager, WebviewUrl, WindowEvent,
 };
 use url::Url;
 
 const DEFAULT_JOIN_URL: &str =
     "https://ms.symsun.com/interview3s-web/views/interview/meeting/meeting_join.html?token=inv-c507cc8aca8a448d";
 
-/// Compact guard toolbar height (logical px).
 const CHROME_H: f64 = 84.0;
 
 fn layout_main(window: &tauri::Window, width: f64, height: f64) {
@@ -23,6 +24,16 @@ fn layout_main(window: &tauri::Window, width: f64, height: f64) {
         let _ = biz.set_position(LogicalPosition::new(0.0, chrome_h));
         let _ = biz.set_size(LogicalSize::new(width, biz_h));
     }
+}
+
+fn launch_meeting_url(url: &Url) {
+    let s = url.as_str().to_string();
+    // Avoid blocking the webview navigation callback.
+    std::thread::spawn(move || {
+        if let Err(e) = launch::open_externally(&s) {
+            eprintln!("[launch] {e}");
+        }
+    });
 }
 
 #[tauri::command]
@@ -70,6 +81,91 @@ fn set_main_topmost(app: tauri::AppHandle, topmost: bool) -> Result<(), String> 
     }
 }
 
+/// Open a Tencent Meeting https / wemeet link via the OS (browser or protocol handler).
+#[tauri::command]
+fn open_meeting_link(url: String) -> Result<String, String> {
+    let parsed = Url::parse(&url).map_err(|e| e.to_string())?;
+    if !(launch::is_meeting_protocol(&parsed) || launch::is_tencent_meeting_https(&parsed)) {
+        return Err("仅允许打开腾讯会议相关链接".into());
+    }
+    launch::open_externally(parsed.as_str())?;
+    Ok(format!("已请求系统打开：{}", parsed))
+}
+
+fn build_biz_webview(join_url: Url) -> WebviewBuilder<tauri::Wry> {
+    WebviewBuilder::new("biz", WebviewUrl::External(join_url))
+        .on_navigation(|url| {
+            if launch::should_launch_externally(url) {
+                launch_meeting_url(url);
+                // Keep the interview page in the webview; OS handles meeting launch.
+                return false;
+            }
+            true
+        })
+        .on_new_window(|url, _features| {
+            if launch::should_launch_externally(&url) {
+                launch_meeting_url(&url);
+            } else if matches!(url.scheme(), "http" | "https") {
+                // Other blank targets: also open externally to avoid nested windows.
+                let s = url.as_str().to_string();
+                std::thread::spawn(move || {
+                    let _ = launch::open_externally(&s);
+                });
+            }
+            NewWindowResponse::Deny
+        })
+        .initialization_script(
+            r#"
+            (function () {
+              if (window.__imLaunchHook) return;
+              window.__imLaunchHook = true;
+
+              function isMeetingHref(href) {
+                if (!href) return false;
+                if (/^(wemeet|wemeetios|tencentmeeting):/i.test(href)) return true;
+                try {
+                  const u = new URL(href, location.href);
+                  const h = (u.hostname || '').toLowerCase();
+                  return h === 'meeting.tencent.com'
+                    || h.endsWith('.meeting.tencent.com')
+                    || h === 'voovmeeting.com'
+                    || h.endsWith('.voovmeeting.com');
+                } catch (_) { return false; }
+              }
+
+              function openExternal(href) {
+                // Prefer absolute URL
+                try {
+                  const abs = new URL(href, location.href).href;
+                  // Custom protocol for Rust side may not be available on remote pages;
+                  // also set location as fallback trigger for on_navigation.
+                  location.href = abs;
+                } catch (_) {}
+              }
+
+              document.addEventListener('click', function (e) {
+                const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+                if (!a) return;
+                const href = a.getAttribute('href') || a.href || '';
+                if (!isMeetingHref(href)) return;
+                e.preventDefault();
+                e.stopPropagation();
+                openExternal(href);
+              }, true);
+
+              const nativeOpen = window.open;
+              window.open = function (url) {
+                if (typeof url === 'string' && isMeetingHref(url)) {
+                  openExternal(url);
+                  return null;
+                }
+                return nativeOpen.apply(window, arguments);
+              };
+            })();
+            "#,
+        )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let guard_state = guard::GuardState::default();
@@ -82,7 +178,8 @@ pub fn run() {
             set_guard_enabled,
             set_pull_back,
             tile_with_wemeet,
-            set_main_topmost
+            set_main_topmost,
+            open_meeting_link
         ])
         .setup(move |app| {
             let width = 1180.0;
@@ -105,7 +202,7 @@ pub fn run() {
             )?;
 
             let _biz = window.add_child(
-                WebviewBuilder::new("biz", WebviewUrl::External(join_url)).on_navigation(|_| true),
+                build_biz_webview(join_url),
                 LogicalPosition::new(0.0, chrome_h),
                 LogicalSize::new(width, biz_h),
             )?;
@@ -122,7 +219,6 @@ pub fn run() {
             #[cfg(windows)]
             {
                 guard::start_guard_loop(app.handle().clone(), guard_state.clone());
-                // Record切屏 by default; do not yank focus until user enables pull-back.
                 guard_state.set_enabled(true);
                 guard_state.set_pull_back(false);
             }

@@ -1,6 +1,6 @@
 [package]
 name = "interview-meeting"
-version = "0.3.0"
+version = "0.3.1"
 description = "Interview Meeting MVP - single window (guard bar + join page) + Tencent Meeting"
 authors = ["you"]
 edition = "2021"
@@ -24,6 +24,7 @@ parking_lot = "0.12"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Shell",
   "Win32_System_Threading",
   "Win32_System_ProcessStatus",
   "Win32_Graphics_Gdi",

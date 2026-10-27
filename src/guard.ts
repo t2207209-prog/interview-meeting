@@ -55,7 +55,7 @@ function render(s: GuardStatus) {
       hintEl.textContent = "前台不在白名单（本应用 / 腾讯会议）。";
       hintEl.dataset.warn = "1";
     } else {
-      hintEl.textContent = "上栏监考 · 下栏入会页 · 可与腾讯会议左右分屏";
+      hintEl.textContent = "点「进入腾讯会议」会用系统打开会议链接并拉起客户端";
       hintEl.dataset.warn = "0";
     }
   }
