@@ -1,10 +1,11 @@
 mod capture;
 mod guard;
 mod launch;
+mod session;
 
 use tauri::{
     webview::{NewWindowResponse, WebviewBuilder},
-    LogicalPosition, LogicalSize, Manager, WebviewUrl, WindowEvent,
+    Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WindowEvent,
 };
 use url::Url;
 
@@ -12,6 +13,13 @@ const DEFAULT_JOIN_URL: &str =
     "https://ms.symsun.com/interview3s-web/views/interview/meeting/meeting_join.html?token=inv-c507cc8aca8a448d";
 
 const CHROME_H: f64 = 96.0;
+
+fn layout_warn(window: &tauri::Window, width: f64, height: f64) {
+    if let Some(warn) = window.get_webview("warn") {
+        let _ = warn.set_position(LogicalPosition::new(0.0, 0.0));
+        let _ = warn.set_size(LogicalSize::new(width, height));
+    }
+}
 
 fn layout_main(window: &tauri::Window, width: f64, height: f64) {
     let chrome_h = CHROME_H.min(height * 0.35).max(64.0);
@@ -25,6 +33,38 @@ fn layout_main(window: &tauri::Window, width: f64, height: f64) {
         let _ = biz.set_position(LogicalPosition::new(0.0, chrome_h));
         let _ = biz.set_size(LogicalSize::new(width, biz_h));
     }
+}
+
+fn layout_for_state(window: &tauri::Window, width: f64, height: f64) {
+    if window.get_webview("warn").is_some() {
+        layout_warn(window, width, height);
+    } else {
+        layout_main(window, width, height);
+    }
+}
+
+fn start_interview_shell(window: &tauri::Window, width: f64, height: f64) -> Result<(), String> {
+    let join_url = Url::parse(DEFAULT_JOIN_URL).map_err(|e| e.to_string())?;
+    let chrome_h = CHROME_H.min(height * 0.35).max(64.0);
+    let biz_h = (height - chrome_h).max(120.0);
+
+    window
+        .add_child(
+            WebviewBuilder::new("chrome", WebviewUrl::App("guard.html".into())),
+            LogicalPosition::new(0.0, 0.0),
+            LogicalSize::new(width, chrome_h),
+        )
+        .map_err(|e| e.to_string())?;
+
+    window
+        .add_child(
+            build_biz_webview(join_url),
+            LogicalPosition::new(0.0, chrome_h),
+            LogicalSize::new(width, biz_h),
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 fn launch_meeting_url(url: &Url) {
@@ -114,6 +154,48 @@ fn capture_now(state: tauri::State<'_, capture::CaptureState>) -> Result<capture
 #[tauri::command]
 fn open_capture_dir(state: tauri::State<'_, capture::CaptureState>) -> Result<String, String> {
     capture::open_save_dir(&state)
+}
+
+#[tauri::command]
+fn acknowledge_warning(
+    app: tauri::AppHandle,
+    session: tauri::State<'_, session::SessionState>,
+    guard_state: tauri::State<'_, guard::GuardState>,
+    capture_state: tauri::State<'_, capture::CaptureState>,
+) -> Result<(), String> {
+    if !session.mark_acknowledged() {
+        return Ok(());
+    }
+
+    let Some(window) = app.get_window("main") else {
+        return Err("主窗口未就绪".into());
+    };
+
+    if let Some(warn) = window.get_webview("warn") {
+        warn.close().map_err(|e| e.to_string())?;
+    }
+
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let size = window.inner_size().map_err(|e| e.to_string())?;
+    let logical = size.to_logical::<f64>(scale);
+    start_interview_shell(&window, logical.width, logical.height)?;
+    session.mark_interview_started();
+
+    #[cfg(windows)]
+    {
+        let g = (*guard_state).clone();
+        let c = (*capture_state).clone();
+        guard::start_guard_loop(app.clone(), g.clone());
+        guard::start_layout_lock_loop(g.clone());
+        guard::start_meet_auto_loop(app.clone(), g.clone());
+        g.set_enabled(true);
+        g.set_pull_back(false);
+        c.set_enabled(true);
+        let _ = capture::capture_once(&c);
+    }
+
+    let _ = app.emit("session://ready", true);
+    Ok(())
 }
 
 /// Open a Tencent Meeting https / wemeet link via native protocol when possible.
@@ -276,11 +358,13 @@ fn build_biz_webview(join_url: Url) -> WebviewBuilder<tauri::Wry> {
 pub fn run() {
     let guard_state = guard::GuardState::default();
     let capture_state = capture::CaptureState::default();
+    let session_state = session::SessionState::default();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(guard_state.clone())
         .manage(capture_state.clone())
+        .manage(session_state)
         .invoke_handler(tauri::generate_handler![
             get_guard_status,
             set_guard_enabled,
@@ -291,12 +375,12 @@ pub fn run() {
             get_capture_status,
             set_capture_enabled,
             capture_now,
-            open_capture_dir
+            open_capture_dir,
+            acknowledge_warning
         ])
         .setup(move |app| {
             let width = 1180.0;
             let height = 860.0;
-            let join_url = Url::parse(DEFAULT_JOIN_URL).expect("valid join url");
 
             let window = tauri::window::WindowBuilder::new(app, "main")
                 .title("Interview3S")
@@ -304,19 +388,11 @@ pub fn run() {
                 .min_inner_size(900.0, 640.0)
                 .build()?;
 
-            let chrome_h = CHROME_H;
-            let biz_h = height - chrome_h;
-
-            let _chrome = window.add_child(
-                WebviewBuilder::new("chrome", WebviewUrl::App("guard.html".into())),
+            // Consent / warning first — interview shell starts after acknowledge.
+            let _warn = window.add_child(
+                WebviewBuilder::new("warn", WebviewUrl::App("warning.html".into())),
                 LogicalPosition::new(0.0, 0.0),
-                LogicalSize::new(width, chrome_h),
-            )?;
-
-            let _biz = window.add_child(
-                build_biz_webview(join_url),
-                LogicalPosition::new(0.0, chrome_h),
-                LogicalSize::new(width, biz_h),
+                LogicalSize::new(width, height),
             )?;
 
             let window_for_events = window.clone();
@@ -324,18 +400,12 @@ pub fn run() {
                 if let WindowEvent::Resized(size) = event {
                     let scale = window_for_events.scale_factor().unwrap_or(1.0);
                     let logical = size.to_logical::<f64>(scale);
-                    layout_main(&window_for_events, logical.width, logical.height);
+                    layout_for_state(&window_for_events, logical.width, logical.height);
                 }
             });
 
             #[cfg(windows)]
             {
-                guard::start_guard_loop(app.handle().clone(), guard_state.clone());
-                guard::start_layout_lock_loop(guard_state.clone());
-                guard::start_meet_auto_loop(app.handle().clone(), guard_state.clone());
-                guard_state.set_enabled(true);
-                guard_state.set_pull_back(false);
-
                 let shots = app
                     .path()
                     .app_data_dir()
@@ -345,7 +415,8 @@ pub fn run() {
                     });
                 capture_state.init_dir(shots);
                 capture_state.set_interval_secs(30);
-                capture_state.set_enabled(true);
+                // Stay off until candidate acknowledges the warning.
+                capture_state.set_enabled(false);
                 capture::start_capture_loop(app.handle().clone(), capture_state.clone());
             }
 
