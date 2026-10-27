@@ -87,7 +87,7 @@ fn reveal_interview_ui(
             guard::start_layout_lock_loop(g.clone());
             guard::start_meet_auto_loop(app.clone(), g.clone());
             g.set_enabled(true);
-            g.set_pull_back(false);
+            g.set_pull_back(true);
             c.set_enabled(true);
             // Never block UI thread on PNG encode.
             std::thread::spawn(move || {
