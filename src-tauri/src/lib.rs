@@ -27,11 +27,12 @@ fn layout_main(window: &tauri::Window, width: f64, height: f64) {
 }
 
 fn launch_meeting_url(url: &Url) {
-    let s = url.as_str().to_string();
+    let parsed = url.clone();
     // Avoid blocking the webview navigation callback.
     std::thread::spawn(move || {
-        if let Err(e) = launch::open_externally(&s) {
-            eprintln!("[launch] {e}");
+        match launch::launch_meeting(&parsed, None) {
+            Ok(target) => eprintln!("[launch] opened {target}"),
+            Err(e) => eprintln!("[launch] {e}"),
         }
     });
 }
@@ -81,23 +82,32 @@ fn set_main_topmost(app: tauri::AppHandle, topmost: bool) -> Result<(), String> 
     }
 }
 
-/// Open a Tencent Meeting https / wemeet link via the OS (browser or protocol handler).
+/// Open a Tencent Meeting https / wemeet link via native protocol when possible.
 #[tauri::command]
-fn open_meeting_link(url: String) -> Result<String, String> {
+fn open_meeting_link(url: String, meeting_code: Option<String>) -> Result<String, String> {
     let parsed = Url::parse(&url).map_err(|e| e.to_string())?;
     if !(launch::is_meeting_protocol(&parsed) || launch::is_tencent_meeting_https(&parsed)) {
+        // Allow raw meeting-code-only helper: treat as code hint with dummy https.
+        if let Some(code) = meeting_code.as_deref() {
+            let digits: String = code.chars().filter(|c| c.is_ascii_digit()).collect();
+            if digits.len() >= 9 {
+                let target = launch::wemeet_deep_link(&digits);
+                launch::open_externally(&target)?;
+                return Ok(format!("已拉起腾讯会议：{target}"));
+            }
+        }
         return Err("仅允许打开腾讯会议相关链接".into());
     }
-    launch::open_externally(parsed.as_str())?;
-    Ok(format!("已请求系统打开：{}", parsed))
+    let target = launch::launch_meeting(&parsed, meeting_code.as_deref())?;
+    Ok(format!("已拉起腾讯会议：{target}"))
 }
 
 fn build_biz_webview(join_url: Url) -> WebviewBuilder<tauri::Wry> {
     WebviewBuilder::new("biz", WebviewUrl::External(join_url))
         .on_navigation(|url| {
             if launch::should_launch_externally(url) {
+                // Convert https://meeting.tencent.com/...?...meetingcode= to wemeet://
                 launch_meeting_url(url);
-                // Keep the interview page in the webview; OS handles meeting launch.
                 return false;
             }
             true
@@ -105,12 +115,6 @@ fn build_biz_webview(join_url: Url) -> WebviewBuilder<tauri::Wry> {
         .on_new_window(|url, _features| {
             if launch::should_launch_externally(&url) {
                 launch_meeting_url(&url);
-            } else if matches!(url.scheme(), "http" | "https") {
-                // Other blank targets: also open externally to avoid nested windows.
-                let s = url.as_str().to_string();
-                std::thread::spawn(move || {
-                    let _ = launch::open_externally(&s);
-                });
             }
             NewWindowResponse::Deny
         })
@@ -119,6 +123,31 @@ fn build_biz_webview(join_url: Url) -> WebviewBuilder<tauri::Wry> {
             (function () {
               if (window.__imLaunchHook) return;
               window.__imLaunchHook = true;
+
+              function digitsOnly(s) {
+                return String(s || '').replace(/\D/g, '');
+              }
+
+              function pageMeetingCode() {
+                // Prefer explicit fields from the interview page.
+                const candidates = [];
+                document.querySelectorAll('input, textarea, [data-meeting-code], code, span, div, p, li').forEach((el) => {
+                  const attr = el.getAttribute && el.getAttribute('data-meeting-code');
+                  if (attr) candidates.push(attr);
+                  if ('value' in el && el.value) candidates.push(String(el.value));
+                  const t = (el.textContent || '').trim();
+                  if (t && t.length < 40) candidates.push(t);
+                });
+                // Also scan body for patterns like 429 107 694 / 429-107-694
+                const body = (document.body && document.body.innerText) || '';
+                const m = body.match(/\b(\d{3}[\s\-]*\d{3}[\s\-]*\d{3})\b/);
+                if (m) candidates.unshift(m[1]);
+                for (const c of candidates) {
+                  const d = digitsOnly(c);
+                  if (d.length >= 9 && d.length <= 12) return d;
+                }
+                return '';
+              }
 
               function isMeetingHref(href) {
                 if (!href) return false;
@@ -133,30 +162,73 @@ fn build_biz_webview(join_url: Url) -> WebviewBuilder<tauri::Wry> {
                 } catch (_) { return false; }
               }
 
-              function openExternal(href) {
-                // Prefer absolute URL
+              function toWemeet(href, codeHint) {
+                if (/^(wemeet|wemeetios|tencentmeeting):/i.test(href)) return href;
                 try {
-                  const abs = new URL(href, location.href).href;
-                  // Custom protocol for Rust side may not be available on remote pages;
-                  // also set location as fallback trigger for on_navigation.
-                  location.href = abs;
+                  const u = new URL(href, location.href);
+                  const code = digitsOnly(
+                    u.searchParams.get('meeting_code')
+                    || u.searchParams.get('meetingCode')
+                    || u.searchParams.get('meetingcode')
+                    || u.searchParams.get('code')
+                    || codeHint
+                    || ''
+                  );
+                  if (code.length >= 9) {
+                    return 'wemeet://page/inmeeting?meeting_code=' + code;
+                  }
                 } catch (_) {}
+                return href;
+              }
+
+              function openMeeting(href) {
+                const code = pageMeetingCode();
+                const target = toWemeet(href, code);
+                // Trigger on_navigation in the host; Rust converts/opens via ShellExecute.
+                location.href = target;
               }
 
               document.addEventListener('click', function (e) {
                 const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
-                if (!a) return;
-                const href = a.getAttribute('href') || a.href || '';
-                if (!isMeetingHref(href)) return;
-                e.preventDefault();
-                e.stopPropagation();
-                openExternal(href);
+                if (a) {
+                  const href = a.getAttribute('href') || a.href || '';
+                  if (isMeetingHref(href)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openMeeting(href);
+                    return;
+                  }
+                }
+                // Buttons that look like join actions often wrap no <a>.
+                const btn = e.target && e.target.closest
+                  ? e.target.closest('button, [role="button"], .join-btn, a')
+                  : null;
+                if (!btn) return;
+                const label = ((btn.innerText || btn.textContent || '') + ' ' + (btn.getAttribute('href') || '')).trim();
+                if (/腾讯会议|进入会议|加入会议|Join Meeting|进入腾讯/i.test(label)) {
+                  // Prefer visible exclusive link on page.
+                  const linkEl = document.querySelector('input[readonly], textarea, [class*="join"] a, a[href*="meeting.tencent.com"]');
+                  let href = '';
+                  if (linkEl) {
+                    href = linkEl.getAttribute('href') || linkEl.value || linkEl.textContent || '';
+                  }
+                  href = (href || '').trim();
+                  if (!isMeetingHref(href)) {
+                    const code = pageMeetingCode();
+                    if (code) href = 'wemeet://page/inmeeting?meeting_code=' + code;
+                  }
+                  if (href) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openMeeting(href);
+                  }
+                }
               }, true);
 
               const nativeOpen = window.open;
               window.open = function (url) {
                 if (typeof url === 'string' && isMeetingHref(url)) {
-                  openExternal(url);
+                  openMeeting(url);
                   return null;
                 }
                 return nativeOpen.apply(window, arguments);
