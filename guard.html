@@ -11,23 +11,22 @@
     <div class="toolbar">
       <div class="brand">
         <strong>Interview3S</strong>
-        <span id="enabled-text" class="pill">—</span>
       </div>
 
       <div class="metrics">
         <span>切屏 <strong id="violations">0</strong></span>
         <span>前台 <strong id="foreground">—</strong></span>
         <span>屏数 <strong id="monitors">1</strong></span>
-        <span>截屏 <strong id="shots">0</strong></span>
+        <span>截屏数 <strong id="shots">0</strong></span>
         <span class="title-snip" id="title" title="">—</span>
       </div>
 
-      <div class="toolbar-actions">
-        <button id="toggle-guard" type="button">关闭守卫</button>
-        <button id="toggle-pull" type="button" class="secondary">强拉：关</button>
-        <button id="tile" type="button" class="secondary">与腾讯会议分屏</button>
-        <button id="topmost" type="button" class="secondary">置顶：开</button>
-        <button id="toggle-capture" type="button" class="secondary">截屏：开</button>
+      <div class="status-lamps" aria-label="监考状态">
+        <span class="lamp" id="lamp-guard" data-on="0">守卫关</span>
+        <span class="lamp" id="lamp-pull" data-on="0">强拉关</span>
+        <span class="lamp" id="lamp-tile" data-on="0">并排关</span>
+        <span class="lamp" id="lamp-topmost" data-on="0">置顶关</span>
+        <span class="lamp" id="lamp-capture" data-on="0">截屏关</span>
       </div>
     </div>
     <p id="hint" class="hint bar-hint"></p>
