@@ -35,8 +35,6 @@ const togglePullBtn = document.querySelector<HTMLButtonElement>("#toggle-pull");
 const tileBtn = document.querySelector<HTMLButtonElement>("#tile");
 const topmostBtn = document.querySelector<HTMLButtonElement>("#topmost");
 const toggleCaptureBtn = document.querySelector<HTMLButtonElement>("#toggle-capture");
-const captureNowBtn = document.querySelector<HTMLButtonElement>("#capture-now");
-const openShotsBtn = document.querySelector<HTMLButtonElement>("#open-shots");
 
 let pullBack = false;
 let topmost = false;
@@ -156,25 +154,6 @@ async function boot() {
           ? `定时截屏已开启（每 ${c.intervalSecs || 30}s，仅存本地）`
           : "定时截屏已关闭",
       );
-    } catch (e) {
-      setStatus(String(e), true);
-    }
-  });
-
-  captureNowBtn?.addEventListener("click", async () => {
-    try {
-      const c = await invoke<CaptureStatus>("capture_now");
-      renderCapture(c);
-      setStatus(`已截屏：${c.lastPath || "完成"}`);
-    } catch (e) {
-      setStatus(String(e), true);
-    }
-  });
-
-  openShotsBtn?.addEventListener("click", async () => {
-    try {
-      const dir = await invoke<string>("open_capture_dir");
-      setStatus(`已打开截屏目录：${dir}`);
     } catch (e) {
       setStatus(String(e), true);
     }
