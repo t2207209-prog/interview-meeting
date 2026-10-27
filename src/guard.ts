@@ -53,7 +53,7 @@ function render(s: GuardStatus) {
   if (hintEl) {
     if (s.layoutLocked) {
       hintEl.textContent =
-        "分屏已锁定：禁止拖动/最小化；腾讯会议弹窗可显示，关「置顶」解除锁定。";
+        "分屏已锁定（会议打开自动）：禁止拖动/最小化；关会议或关「置顶」解除。";
       hintEl.dataset.warn = "1";
     } else if ((s.monitorCount ?? 1) > 1) {
       hintEl.textContent = "多显示器：建议只保留一块屏幕。";
@@ -62,7 +62,8 @@ function render(s: GuardStatus) {
       hintEl.textContent = "前台不在白名单（本应用 / 腾讯会议）。";
       hintEl.dataset.warn = "1";
     } else {
-      hintEl.textContent = "点「与腾讯会议分屏」后两窗铺满并锁定；关「置顶」可解除锁定。";
+      hintEl.textContent =
+        "打开腾讯会议后自动分屏并置顶；关闭会议自动取消置顶。";
       hintEl.dataset.warn = "0";
     }
   }
@@ -115,6 +116,14 @@ async function boot() {
 
   await refresh();
   await listen<GuardStatus>("guard://status", (ev) => render(ev.payload));
+  await listen<GuardStatus>("guard://auto-tiled", (ev) => {
+    render(ev.payload);
+    setStatus("检测到腾讯会议：已自动分屏并置顶");
+  });
+  await listen<GuardStatus>("guard://auto-released", (ev) => {
+    render(ev.payload);
+    setStatus("腾讯会议已关闭：已取消置顶并解除锁定");
+  });
   await listen<GuardStatus>("guard://violation", (ev) => {
     render(ev.payload);
     setStatus(`切屏 +1：${ev.payload.lastProcess || "未知"}`, true);
