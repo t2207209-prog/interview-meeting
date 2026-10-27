@@ -94,6 +94,26 @@ h1 {
   font-weight: 750;
 }
 
+.ack-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 18px;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  color: var(--ink);
+  cursor: pointer;
+  user-select: none;
+}
+
+.ack-check input {
+  margin-top: 3px;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
 .error {
   margin: 0 0 12px;
   color: var(--danger);
@@ -115,8 +135,19 @@ button#ack {
 }
 
 button#ack:disabled {
-  opacity: 0.65;
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: #8aa89c;
+}
+
+button#ack:disabled[data-ready="0"] {
+  cursor: not-allowed;
+}
+
+button#ack:disabled:not([data-ready="0"]) {
   cursor: wait;
+  opacity: 0.65;
+  background: var(--accent);
 }
 
 @media (max-width: 560px) {
