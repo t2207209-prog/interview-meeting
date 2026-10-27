@@ -1,6 +1,6 @@
 [package]
 name = "interview-meeting"
-version = "0.3.6"
+version = "0.3.7"
 description = "Interview Meeting MVP - single window (guard bar + join page) + Tencent Meeting"
 authors = ["you"]
 edition = "2021"
@@ -19,6 +19,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
 parking_lot = "0.12"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
