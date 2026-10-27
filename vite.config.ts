@@ -16,6 +16,7 @@ export default defineConfig(() => ({
       input: {
         index: path.resolve(root, "index.html"),
         guard: path.resolve(root, "guard.html"),
+        warning: path.resolve(root, "warning.html"),
       },
     },
   },
