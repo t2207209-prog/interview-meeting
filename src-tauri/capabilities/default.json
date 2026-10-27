@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Single window: chrome toolbar + biz join page",
-  "windows": ["main", "chrome", "biz"],
+  "description": "Warning consent then chrome toolbar + biz join page",
+  "windows": ["main", "warn", "chrome", "biz"],
   "permissions": [
     "core:default",
     "core:event:default",
