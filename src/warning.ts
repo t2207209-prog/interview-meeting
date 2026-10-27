@@ -12,6 +12,7 @@ ackBtn?.addEventListener("click", async () => {
     errorEl.textContent = "";
   }
   try {
+    // Backend returns immediately; UI switches on main thread shortly after.
     await invoke("acknowledge_warning");
   } catch (e) {
     ackBtn.disabled = false;
