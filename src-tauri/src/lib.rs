@@ -1,3 +1,4 @@
+mod capture;
 mod guard;
 mod launch;
 
@@ -10,7 +11,7 @@ use url::Url;
 const DEFAULT_JOIN_URL: &str =
     "https://ms.symsun.com/interview3s-web/views/interview/meeting/meeting_join.html?token=inv-c507cc8aca8a448d";
 
-const CHROME_H: f64 = 84.0;
+const CHROME_H: f64 = 96.0;
 
 fn layout_main(window: &tauri::Window, width: f64, height: f64) {
     let chrome_h = CHROME_H.min(height * 0.35).max(64.0);
@@ -88,6 +89,31 @@ fn set_main_topmost(
         }
         Ok(())
     }
+}
+
+#[tauri::command]
+fn get_capture_status(state: tauri::State<'_, capture::CaptureState>) -> capture::CaptureStatus {
+    state.status()
+}
+
+#[tauri::command]
+fn set_capture_enabled(
+    enabled: bool,
+    state: tauri::State<'_, capture::CaptureState>,
+) -> capture::CaptureStatus {
+    state.set_enabled(enabled);
+    state.status()
+}
+
+#[tauri::command]
+fn capture_now(state: tauri::State<'_, capture::CaptureState>) -> Result<capture::CaptureStatus, String> {
+    capture::capture_once(&state)?;
+    Ok(state.status())
+}
+
+#[tauri::command]
+fn open_capture_dir(state: tauri::State<'_, capture::CaptureState>) -> Result<String, String> {
+    capture::open_save_dir(&state)
 }
 
 /// Open a Tencent Meeting https / wemeet link via native protocol when possible.
@@ -249,17 +275,23 @@ fn build_biz_webview(join_url: Url) -> WebviewBuilder<tauri::Wry> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let guard_state = guard::GuardState::default();
+    let capture_state = capture::CaptureState::default();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(guard_state.clone())
+        .manage(capture_state.clone())
         .invoke_handler(tauri::generate_handler![
             get_guard_status,
             set_guard_enabled,
             set_pull_back,
             tile_with_wemeet,
             set_main_topmost,
-            open_meeting_link
+            open_meeting_link,
+            get_capture_status,
+            set_capture_enabled,
+            capture_now,
+            open_capture_dir
         ])
         .setup(move |app| {
             let width = 1180.0;
@@ -303,6 +335,18 @@ pub fn run() {
                 guard::start_meet_auto_loop(app.handle().clone(), guard_state.clone());
                 guard_state.set_enabled(true);
                 guard_state.set_pull_back(false);
+
+                let shots = app
+                    .path()
+                    .app_data_dir()
+                    .map(|p| p.join("screenshots"))
+                    .unwrap_or_else(|_| {
+                        std::env::temp_dir().join("interview-meeting").join("screenshots")
+                    });
+                capture_state.init_dir(shots);
+                capture_state.set_interval_secs(30);
+                capture_state.set_enabled(true);
+                capture::start_capture_loop(app.handle().clone(), capture_state.clone());
             }
 
             Ok(())
