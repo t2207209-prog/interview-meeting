@@ -12,7 +12,7 @@ use url::Url;
 const DEFAULT_JOIN_URL: &str =
     "https://ms.symsun.com/interview3s-web/views/interview/meeting/meeting_join.html?token=inv-c507cc8aca8a448d";
 
-const CHROME_H: f64 = 128.0;
+const CHROME_H: f64 = 100.0;
 
 fn layout_warn(window: &tauri::Window, width: f64, height: f64) {
     if let Some(warn) = window.get_webview("warn") {

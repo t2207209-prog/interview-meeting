@@ -16,10 +16,10 @@ use windows_sys::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetForegroundWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
-    IsIconic, IsWindow, IsWindowVisible, MoveWindow, SetForegroundWindow, SetWindowPos, ShowWindow,
-    HWND_NOTOPMOST, HWND_TOPMOST, SW_RESTORE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_SHOWWINDOW,
+    EnumWindows, GetForegroundWindow, GetWindow, GetWindowRect, GetWindowTextW,
+    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, MoveWindow,
+    SetForegroundWindow, SetWindowPos, ShowWindow, GW_OWNER, HWND_NOTOPMOST, HWND_TOPMOST,
+    SW_RESTORE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
 };
 
 const POLL_MS: u64 = 350;
@@ -418,6 +418,41 @@ unsafe fn looks_like_meet_window(hwnd: HWND) -> bool {
         || title.to_ascii_lowercase().contains("tencent meeting")
 }
 
+/// Home / parent client of Tencent Meeting (not the concrete in-meeting room).
+fn is_meet_shell_title(title: &str) -> bool {
+    let t = title.trim();
+    t.is_empty()
+        || t == "腾讯会议"
+        || t == "WeMeet"
+        || t.eq_ignore_ascii_case("Tencent Meeting")
+}
+
+unsafe fn window_area(hwnd: HWND) -> i64 {
+    current_rect(hwnd)
+        .map(|r| (r.right as i64 - r.left as i64) * (r.bottom as i64 - r.top as i64))
+        .unwrap_or(0)
+}
+
+/// Prefer the concrete in-meeting window over the parent/home client.
+unsafe fn meet_pick_score(hwnd: HWND, z_bonus: i64) -> i64 {
+    let title = window_title(hwnd);
+    let area = window_area(hwnd);
+    let mut score = area + z_bonus;
+    if is_meet_shell_title(&title) {
+        // Heavy penalty so any titled meeting room wins over the home shell.
+        score -= 1_000_000_000;
+    } else {
+        score += 200_000_000;
+        score += (title.chars().count() as i64).min(64) * 20_000;
+    }
+    // Owned frames are often the in-meeting surface relative to the shell.
+    let owner = GetWindow(hwnd, GW_OWNER);
+    if !owner.is_null() {
+        score += 80_000_000;
+    }
+    score
+}
+
 unsafe extern "system" fn enum_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let data = &mut *(lparam as *mut EnumData);
     if IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
@@ -446,15 +481,38 @@ unsafe fn find_meet_windows() -> Vec<HWND> {
     data.handles
 }
 
-/// Prefer the largest visible meeting window as the main pane.
+/// Pick the concrete in-meeting window. Returns None when only the parent/home client is open
+/// so we do not tile/topmost against the shell alone.
 unsafe fn pick_main_meet(handles: &[HWND]) -> Option<HWND> {
+    if handles.is_empty() {
+        return None;
+    }
+
+    let has_room = handles
+        .iter()
+        .any(|&h| !is_meet_shell_title(&window_title(h)));
+
+    // Only the parent client — wait until a real meeting room appears.
+    if !has_room && handles.len() < 2 {
+        return None;
+    }
+
+    // All titles look like the shell but multiple large windows exist: prefer the topmost
+    // (EnumWindows is z-order, front first) that is not uniquely the biggest home frame.
+    // Score still breaks ties by area + ownership.
     let mut best: Option<(HWND, i64)> = None;
-    for &hwnd in handles {
-        if let Some(r) = current_rect(hwnd) {
-            let area = (r.right as i64 - r.left as i64) * (r.bottom as i64 - r.top as i64);
-            if best.map(|(_, a)| area > a).unwrap_or(true) {
-                best = Some((hwnd, area));
+    let n = handles.len() as i64;
+    for (i, &hwnd) in handles.iter().enumerate() {
+        // When only shell-titled windows exist, demote the single largest (usually home).
+        let mut score = meet_pick_score(hwnd, (n - i as i64) * 5_000);
+        if !has_room {
+            let max_area = handles.iter().map(|&h| window_area(h)).max().unwrap_or(0);
+            if window_area(hwnd) == max_area {
+                score -= 50_000_000;
             }
+        }
+        if best.map(|(_, s)| score > s).unwrap_or(true) {
+            best = Some((hwnd, score));
         }
     }
     best.map(|(h, _)| h)
@@ -482,7 +540,7 @@ pub fn tile_with_tencent_meeting(app: &AppHandle, state: &GuardState) -> Result<
     unsafe {
         let handles = find_meet_windows();
         let Some(meet) = pick_main_meet(&handles) else {
-            return Err("未找到腾讯会议窗口，请先打开并进入会议".into());
+            return Err("未找到具体会议窗口（仅父客户端不会并排），请先进入会议".into());
         };
 
         let monitor = primary_monitor_rect();
@@ -572,59 +630,62 @@ pub fn release_layout_lock(app: &AppHandle, state: &GuardState) -> Result<(), St
     Ok(())
 }
 
-/// Watch Tencent Meeting: auto tile+topmost on open, release topmost on close.
+/// Watch Tencent Meeting: tile+topmost only with a concrete meeting room window;
+/// release topmost when that room is gone (parent/home alone does not keep us topmost).
 pub fn start_meet_auto_loop(app: AppHandle, state: GuardState) {
     thread::spawn(move || {
-        let mut was_present = false;
+        let mut was_in_meeting = false;
         loop {
             thread::sleep(Duration::from_millis(MEET_AUTO_POLL_MS));
 
             let handles = unsafe { find_meet_windows() };
-            let present = !handles.is_empty();
+            let preferred = unsafe { pick_main_meet(&handles) };
+            let in_meeting = preferred.is_some();
             let (locked, meet_hwnd) = {
                 let g = state.inner.lock();
                 (g.layout_locked, g.meet_pane.map(|p| p.hwnd))
             };
 
-            if present && !was_present {
-                // Wait for the real in-meeting frame to settle, then tile.
-                thread::sleep(Duration::from_millis(MEET_APPEAR_DEBOUNCE_MS));
-                let handles2 = unsafe { find_meet_windows() };
-                if handles2.is_empty() {
-                    was_present = false;
-                    continue;
-                }
-                match tile_with_tencent_meeting(&app, &state) {
-                    Ok(msg) => {
-                        eprintln!("[meet-auto] {msg}");
-                        let _ = app.emit("guard://auto-tiled", state.status());
-                    }
-                    Err(e) => eprintln!("[meet-auto] tile skipped: {e}"),
-                }
-                was_present = true;
-                continue;
-            } else if present && locked {
-                // Main meet HWND died (reload / replace) — retile onto the new window.
+            if let Some(target) = preferred {
+                let target_id = target as isize;
                 let dead = meet_hwnd
                     .map(|h| unsafe { IsWindow(h as HWND) == 0 })
                     .unwrap_or(true);
-                if dead {
+                let switched = meet_hwnd.map(|h| h != target_id).unwrap_or(true);
+                let need_tile = !locked || dead || switched;
+
+                if need_tile {
+                    if !was_in_meeting {
+                        // Wait for the real in-meeting frame to settle, then tile.
+                        thread::sleep(Duration::from_millis(MEET_APPEAR_DEBOUNCE_MS));
+                        let handles2 = unsafe { find_meet_windows() };
+                        if unsafe { pick_main_meet(&handles2) }.is_none() {
+                            was_in_meeting = false;
+                            continue;
+                        }
+                    }
                     match tile_with_tencent_meeting(&app, &state) {
-                        Ok(msg) => eprintln!("[meet-auto] retile: {msg}"),
-                        Err(e) => eprintln!("[meet-auto] retile skipped: {e}"),
+                        Ok(msg) => {
+                            eprintln!("[meet-auto] {msg}");
+                            let _ = app.emit("guard://auto-tiled", state.status());
+                        }
+                        Err(e) => eprintln!("[meet-auto] tile skipped: {e}"),
                     }
                 }
-            } else if !present && (was_present || locked) {
+                was_in_meeting = true;
+            } else if was_in_meeting || locked {
+                // No concrete meeting room (or only parent client) → drop topmost/lock.
                 match release_layout_lock(&app, &state) {
                     Ok(()) => {
-                        eprintln!("[meet-auto] meeting closed → unlocked topmost");
+                        eprintln!("[meet-auto] no in-meeting window → unlocked topmost");
                         let _ = app.emit("guard://auto-released", state.status());
                     }
                     Err(e) => eprintln!("[meet-auto] release failed: {e}"),
                 }
+                was_in_meeting = false;
+            } else {
+                was_in_meeting = false;
             }
-
-            was_present = present;
         }
     });
 }

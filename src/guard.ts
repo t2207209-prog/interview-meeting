@@ -87,7 +87,7 @@ function render(s: GuardStatus) {
       hintEl.textContent = "前台不在白名单（本应用 / 腾讯会议）。";
       hintEl.dataset.warn = "1";
     } else {
-      hintEl.textContent = "监考功能保持开启；打开腾讯会议后自动并排并置顶。";
+      hintEl.textContent = "监考功能保持开启；进入具体会议后自动并排并置顶（仅父窗口不置顶）。";
       hintEl.dataset.warn = "0";
     }
   }
