@@ -13,21 +13,35 @@ type GuardStatus = {
   topmost?: boolean;
 };
 
+type CaptureStatus = {
+  enabled: boolean;
+  intervalSecs: number;
+  count: number;
+  lastPath: string;
+  lastError: string;
+  saveDir: string;
+};
+
 const enabledText = document.querySelector<HTMLElement>("#enabled-text");
 const violationsEl = document.querySelector<HTMLElement>("#violations");
 const foregroundEl = document.querySelector<HTMLElement>("#foreground");
 const titleEl = document.querySelector<HTMLElement>("#title");
 const monitorsEl = document.querySelector<HTMLElement>("#monitors");
+const shotsEl = document.querySelector<HTMLElement>("#shots");
 const hintEl = document.querySelector<HTMLElement>("#hint");
 const statusEl = document.querySelector<HTMLElement>("#status");
 const toggleGuardBtn = document.querySelector<HTMLButtonElement>("#toggle-guard");
 const togglePullBtn = document.querySelector<HTMLButtonElement>("#toggle-pull");
 const tileBtn = document.querySelector<HTMLButtonElement>("#tile");
 const topmostBtn = document.querySelector<HTMLButtonElement>("#topmost");
+const toggleCaptureBtn = document.querySelector<HTMLButtonElement>("#toggle-capture");
+const captureNowBtn = document.querySelector<HTMLButtonElement>("#capture-now");
+const openShotsBtn = document.querySelector<HTMLButtonElement>("#open-shots");
 
 let pullBack = false;
 let topmost = false;
 let enabled = true;
+let captureOn = true;
 
 function setStatus(msg: string, isError = false) {
   if (!statusEl) return;
@@ -63,7 +77,7 @@ function render(s: GuardStatus) {
       hintEl.dataset.warn = "1";
     } else {
       hintEl.textContent =
-        "打开腾讯会议后自动分屏并置顶；关闭会议自动取消置顶。";
+        "会议打开自动分屏置顶；默认定时截屏存本地（可关）。";
       hintEl.dataset.warn = "0";
     }
   }
@@ -72,9 +86,26 @@ function render(s: GuardStatus) {
   if (topmostBtn) topmostBtn.textContent = `置顶：${topmost ? "开" : "关"}`;
 }
 
+function renderCapture(s: CaptureStatus) {
+  captureOn = !!s.enabled;
+  if (shotsEl) shotsEl.textContent = String(s.count ?? 0);
+  if (toggleCaptureBtn) {
+    toggleCaptureBtn.textContent = `截屏：${captureOn ? "开" : "关"}`;
+  }
+  if (s.lastError) {
+    setStatus(`截屏失败：${s.lastError}`, true);
+  }
+}
+
 async function refresh() {
   const s = await invoke<GuardStatus>("get_guard_status");
   render(s);
+  try {
+    const c = await invoke<CaptureStatus>("get_capture_status");
+    renderCapture(c);
+  } catch {
+    /* non-windows / not ready */
+  }
 }
 
 async function boot() {
@@ -114,6 +145,41 @@ async function boot() {
     }
   });
 
+  toggleCaptureBtn?.addEventListener("click", async () => {
+    try {
+      const c = await invoke<CaptureStatus>("set_capture_enabled", {
+        enabled: !captureOn,
+      });
+      renderCapture(c);
+      setStatus(
+        captureOn
+          ? `定时截屏已开启（每 ${c.intervalSecs || 30}s，仅存本地）`
+          : "定时截屏已关闭",
+      );
+    } catch (e) {
+      setStatus(String(e), true);
+    }
+  });
+
+  captureNowBtn?.addEventListener("click", async () => {
+    try {
+      const c = await invoke<CaptureStatus>("capture_now");
+      renderCapture(c);
+      setStatus(`已截屏：${c.lastPath || "完成"}`);
+    } catch (e) {
+      setStatus(String(e), true);
+    }
+  });
+
+  openShotsBtn?.addEventListener("click", async () => {
+    try {
+      const dir = await invoke<string>("open_capture_dir");
+      setStatus(`已打开截屏目录：${dir}`);
+    } catch (e) {
+      setStatus(String(e), true);
+    }
+  });
+
   await refresh();
   await listen<GuardStatus>("guard://status", (ev) => render(ev.payload));
   await listen<GuardStatus>("guard://auto-tiled", (ev) => {
@@ -127,6 +193,14 @@ async function boot() {
   await listen<GuardStatus>("guard://violation", (ev) => {
     render(ev.payload);
     setStatus(`切屏 +1：${ev.payload.lastProcess || "未知"}`, true);
+  });
+  await listen<CaptureStatus>("capture://saved", (ev) => {
+    renderCapture(ev.payload);
+    const name = ev.payload.lastPath.split(/[/\\]/).pop() || "";
+    setStatus(`截屏已保存：${name}`);
+  });
+  await listen<CaptureStatus>("capture://error", (ev) => {
+    renderCapture(ev.payload);
   });
   setInterval(() => {
     void refresh();
