@@ -16,12 +16,15 @@ use windows_sys::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
-    IsWindowVisible, MoveWindow, SetForegroundWindow, SetWindowPos, HWND_TOPMOST,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    EnumWindows, GetForegroundWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
+    IsIconic, IsWindow, IsWindowVisible, MoveWindow, SetForegroundWindow, SetWindowPos,
+    HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
 };
 
 const POLL_MS: u64 = 350;
+const LAYOUT_POLL_MS: u64 = 200;
+/// Left pane share of the primary monitor width.
+const LEFT_RATIO: f64 = 0.58;
 
 const WHITELIST: &[&str] = &[
     "interview-meeting",
@@ -42,6 +45,14 @@ pub struct GuardStatus {
     pub last_title: String,
     pub foreground_allowed: bool,
     pub monitor_count: u32,
+    pub layout_locked: bool,
+    pub topmost: bool,
+}
+
+#[derive(Clone, Copy)]
+struct LockedPane {
+    hwnd: isize,
+    rect: RECT,
 }
 
 #[derive(Default)]
@@ -52,6 +63,11 @@ struct GuardInner {
     last_process: String,
     last_title: String,
     foreground_allowed: bool,
+    /// When true: keep both panes topmost, full-height, and snap back if dragged.
+    layout_locked: bool,
+    topmost: bool,
+    main_pane: Option<LockedPane>,
+    meet_pane: Option<LockedPane>,
 }
 
 #[derive(Clone, Default)]
@@ -70,6 +86,8 @@ impl GuardState {
             last_title: g.last_title.clone(),
             foreground_allowed: g.foreground_allowed,
             monitor_count: count_monitors(),
+            layout_locked: g.layout_locked,
+            topmost: g.topmost,
         }
     }
 
@@ -92,6 +110,10 @@ fn exe_stem(path: &str) -> String {
 
 fn is_whitelisted(stem: &str) -> bool {
     WHITELIST.iter().any(|w| stem.contains(w))
+}
+
+fn rect_eq(a: &RECT, b: &RECT) -> bool {
+    a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom
 }
 
 unsafe fn process_image_path(hwnd: HWND) -> String {
@@ -148,6 +170,65 @@ fn count_monitors() -> u32 {
             &mut count as *mut u32 as isize,
         );
         count.max(1)
+    }
+}
+
+/// Full primary monitor bounds (covers taskbar area too) for immersive dual-pane cover.
+fn primary_monitor_rect() -> RECT {
+    unsafe {
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            rcMonitor: RECT {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080,
+            },
+            rcWork: RECT {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080,
+            },
+            dwFlags: 0,
+        };
+        let hwnd = GetForegroundWindow();
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+        GetMonitorInfoW(monitor, &mut info);
+        info.rcMonitor
+    }
+}
+
+unsafe fn force_pane(hwnd: HWND, rect: RECT, topmost: bool) {
+    if hwnd.is_null() || IsWindow(hwnd) == 0 {
+        return;
+    }
+    let w = rect.right - rect.left;
+    let h = rect.bottom - rect.top;
+    MoveWindow(hwnd, rect.left, rect.top, w, h, 1);
+    let z = if topmost { HWND_TOPMOST } else { HWND_NOTOPMOST };
+    SetWindowPos(
+        hwnd,
+        z,
+        rect.left,
+        rect.top,
+        w,
+        h,
+        SWP_NOACTIVATE | SWP_SHOWWINDOW,
+    );
+}
+
+unsafe fn current_rect(hwnd: HWND) -> Option<RECT> {
+    let mut r = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    if GetWindowRect(hwnd, &mut r) != 0 {
+        Some(r)
+    } else {
+        None
     }
 }
 
@@ -209,6 +290,44 @@ pub fn start_guard_loop(app: AppHandle, state: GuardState) {
     });
 }
 
+/// Continuously snap dual panes back if the user tries to drag/resize them while locked.
+pub fn start_layout_lock_loop(state: GuardState) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_millis(LAYOUT_POLL_MS));
+        let (locked, topmost, main, meet) = {
+            let g = state.inner.lock();
+            (g.layout_locked, g.topmost, g.main_pane, g.meet_pane)
+        };
+        if !locked {
+            continue;
+        }
+        unsafe {
+            if let Some(pane) = main {
+                let hwnd = pane.hwnd as HWND;
+                if IsWindow(hwnd) != 0 {
+                    let drifted = current_rect(hwnd)
+                        .map(|r| !rect_eq(&r, &pane.rect))
+                        .unwrap_or(true);
+                    if drifted || topmost {
+                        force_pane(hwnd, pane.rect, topmost);
+                    }
+                }
+            }
+            if let Some(pane) = meet {
+                let hwnd = pane.hwnd as HWND;
+                if IsWindow(hwnd) != 0 {
+                    let drifted = current_rect(hwnd)
+                        .map(|r| !rect_eq(&r, &pane.rect))
+                        .unwrap_or(true);
+                    if drifted || topmost {
+                        force_pane(hwnd, pane.rect, topmost);
+                    }
+                }
+            }
+        }
+    });
+}
+
 struct EnumData {
     handles: Vec<HWND>,
 }
@@ -231,32 +350,25 @@ unsafe extern "system" fn enum_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
     TRUE
 }
 
-fn primary_work_area() -> RECT {
-    unsafe {
-        let mut info = MONITORINFO {
-            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-            rcMonitor: RECT {
-                left: 0,
-                top: 0,
-                right: 1920,
-                bottom: 1080,
-            },
-            rcWork: RECT {
-                left: 0,
-                top: 0,
-                right: 1920,
-                bottom: 1080,
-            },
-            dwFlags: 0,
-        };
-        let hwnd = GetForegroundWindow();
-        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
-        GetMonitorInfoW(monitor, &mut info);
-        info.rcWork
-    }
+fn split_rects(monitor: RECT) -> (RECT, RECT) {
+    let width = monitor.right - monitor.left;
+    let left_w = ((width as f64) * LEFT_RATIO).round() as i32;
+    let left = RECT {
+        left: monitor.left,
+        top: monitor.top,
+        right: monitor.left + left_w,
+        bottom: monitor.bottom,
+    };
+    let right = RECT {
+        left: monitor.left + left_w,
+        top: monitor.top,
+        right: monitor.right,
+        bottom: monitor.bottom,
+    };
+    (left, right)
 }
 
-pub fn tile_with_tencent_meeting(app: &AppHandle) -> Result<String, String> {
+pub fn tile_with_tencent_meeting(app: &AppHandle, state: &GuardState) -> Result<String, String> {
     unsafe {
         let mut data = EnumData {
             handles: Vec::new(),
@@ -267,39 +379,79 @@ pub fn tile_with_tencent_meeting(app: &AppHandle) -> Result<String, String> {
             return Err("未找到腾讯会议窗口，请先打开并进入会议".into());
         }
 
-        let work = primary_work_area();
-        let width = work.right - work.left;
-        let height = work.bottom - work.top;
-        let left_w = (width as f64 * 0.58).round() as i32;
-        let right_w = width - left_w;
-
+        let monitor = primary_monitor_rect();
+        let (left_rect, right_rect) = split_rects(monitor);
         let meet = data.handles[0];
-        MoveWindow(meet, work.left + left_w, work.top, right_w, height, 1);
-        SetWindowPos(
-            meet,
-            HWND_TOPMOST,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSIZE | SWP_NOMOVE,
-        );
 
-        if let Some(main) = app.get_window("main") {
-            let _ = main.set_always_on_top(true);
-            let scale = main.scale_factor().unwrap_or(1.0);
-            let _ = main.set_position(tauri::LogicalPosition::new(
-                (work.left as f64) / scale,
-                (work.top as f64) / scale,
-            ));
-            let _ = main.set_size(tauri::LogicalSize::new(
-                (left_w as f64) / scale,
-                (height as f64) / scale,
-            ));
+        let Some(main) = app.get_window("main") else {
+            return Err("主窗口未就绪".into());
+        };
+        let Ok(hwnd_main_raw) = main.hwnd() else {
+            return Err("无法获取主窗口句柄".into());
+        };
+        let hwnd_main = hwnd_main_raw.0 as isize as HWND;
+
+        // Full-height dual cover + topmost + lock against drag.
+        force_pane(hwnd_main, left_rect, true);
+        force_pane(meet, right_rect, true);
+        let _ = main.set_always_on_top(true);
+
+        {
+            let mut g = state.inner.lock();
+            g.topmost = true;
+            g.layout_locked = true;
+            g.main_pane = Some(LockedPane {
+                hwnd: hwnd_main as isize,
+                rect: left_rect,
+            });
+            g.meet_pane = Some(LockedPane {
+                hwnd: meet as isize,
+                rect: right_rect,
+            });
+        }
+
+        let _ = app.emit("guard://status", &state.status());
+
+        Ok(format!(
+            "已锁定分屏并置顶：铺满主屏高度，禁止拖动下移（会议窗 {} 个）",
+            data.handles.len()
+        ))
+    }
+}
+
+pub fn set_main_topmost(app: &AppHandle, state: &GuardState, topmost: bool) -> Result<(), String> {
+    let Some(main) = app.get_window("main") else {
+        return Err("主窗口未就绪".into());
+    };
+    main.set_always_on_top(topmost)
+        .map_err(|e| e.to_string())?;
+
+    let (main_pane, meet_pane) = {
+        let mut g = state.inner.lock();
+        g.topmost = topmost;
+        // Turning topmost on while already tiled keeps lock; turning off releases lock
+        // so the user can move windows again.
+        if !topmost {
+            g.layout_locked = false;
+        } else if g.main_pane.is_some() && g.meet_pane.is_some() {
+            g.layout_locked = true;
+        }
+        (g.main_pane, g.meet_pane)
+    };
+
+    unsafe {
+        if let Some(pane) = main_pane {
+            force_pane(pane.hwnd as HWND, pane.rect, topmost);
+        }
+        if let Some(pane) = meet_pane {
+            force_pane(pane.hwnd as HWND, pane.rect, topmost);
+        }
+        // If unlocking and no stored panes, still clear topmost on main hwnd.
+        if !topmost {
             if let Ok(hwnd_main) = main.hwnd() {
                 SetWindowPos(
                     hwnd_main.0 as isize as HWND,
-                    HWND_TOPMOST,
+                    HWND_NOTOPMOST,
                     0,
                     0,
                     0,
@@ -308,18 +460,8 @@ pub fn tile_with_tencent_meeting(app: &AppHandle) -> Result<String, String> {
                 );
             }
         }
-
-        Ok(format!(
-            "已分屏：左侧本应用约 58%，右侧腾讯会议约 42%（找到 {} 个会议窗口）",
-            data.handles.len()
-        ))
     }
-}
 
-pub fn set_main_topmost(app: &AppHandle, topmost: bool) -> Result<(), String> {
-    if let Some(main) = app.get_window("main") {
-        main.set_always_on_top(topmost)
-            .map_err(|e| e.to_string())?;
-    }
+    let _ = app.emit("guard://status", &state.status());
     Ok(())
 }
