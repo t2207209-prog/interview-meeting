@@ -35,48 +35,72 @@ fn layout_main(window: &tauri::Window, width: f64, height: f64) {
     }
 }
 
-fn layout_for_state(window: &tauri::Window, width: f64, height: f64) {
-    // Prefer interview shell once it exists; never let a leftover warn cover it.
-    if window.get_webview("chrome").is_some() || window.get_webview("biz").is_some() {
-        layout_main(window, width, height);
-        if let Some(warn) = window.get_webview("warn") {
-            let _ = warn.set_position(LogicalPosition::new(-10_000.0, -10_000.0));
-            let _ = warn.set_size(LogicalSize::new(0.0, 0.0));
+fn collapse_shell(window: &tauri::Window) {
+    for id in ["chrome", "biz"] {
+        if let Some(wv) = window.get_webview(id) {
+            let _ = wv.set_position(LogicalPosition::new(-10_000.0, -10_000.0));
+            let _ = wv.set_size(LogicalSize::new(1.0, 1.0));
         }
-    } else {
-        layout_warn(window, width, height);
     }
 }
 
 fn hide_warn_webview(window: &tauri::Window) {
     if let Some(warn) = window.get_webview("warn") {
         let _ = warn.set_position(LogicalPosition::new(-10_000.0, -10_000.0));
-        let _ = warn.set_size(LogicalSize::new(0.0, 0.0));
+        let _ = warn.set_size(LogicalSize::new(1.0, 1.0));
     }
 }
 
-fn start_interview_shell(window: &tauri::Window, width: f64, height: f64) -> Result<(), String> {
-    let join_url = Url::parse(DEFAULT_JOIN_URL).map_err(|e| e.to_string())?;
-    let chrome_h = CHROME_H.min(height * 0.35).max(64.0);
-    let biz_h = (height - chrome_h).max(120.0);
+fn layout_for_state(window: &tauri::Window, width: f64, height: f64, ready: bool) {
+    if ready {
+        layout_main(window, width, height);
+        hide_warn_webview(window);
+    } else {
+        layout_warn(window, width, height);
+        collapse_shell(window);
+    }
+}
 
-    window
-        .add_child(
-            WebviewBuilder::new("chrome", WebviewUrl::App("guard.html".into())),
-            LogicalPosition::new(0.0, 0.0),
-            LogicalSize::new(width, chrome_h),
-        )
-        .map_err(|e| e.to_string())?;
+fn reveal_interview_ui(
+    app: &tauri::AppHandle,
+    guard_state: &guard::GuardState,
+    capture_state: &capture::CaptureState,
+    session: &session::SessionState,
+) {
+    let Some(window) = app.get_window("main") else {
+        return;
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    let logical = size.to_logical::<f64>(scale);
+    layout_main(&window, logical.width, logical.height);
+    hide_warn_webview(&window);
 
-    window
-        .add_child(
-            build_biz_webview(join_url),
-            LogicalPosition::new(0.0, chrome_h),
-            LogicalSize::new(width, biz_h),
-        )
-        .map_err(|e| e.to_string())?;
+    if session.try_start_interview() {
+        #[cfg(windows)]
+        {
+            let g = guard_state.clone();
+            let c = capture_state.clone();
+            guard::start_guard_loop(app.clone(), g.clone());
+            guard::start_layout_lock_loop(g.clone());
+            guard::start_meet_auto_loop(app.clone(), g.clone());
+            g.set_enabled(true);
+            g.set_pull_back(false);
+            c.set_enabled(true);
+            // Never block UI thread on PNG encode.
+            std::thread::spawn(move || {
+                let _ = capture::capture_once(&c);
+            });
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (guard_state, capture_state);
+        }
+    }
 
-    Ok(())
+    let _ = app.emit("session://ready", true);
 }
 
 fn launch_meeting_url(url: &Url) {
@@ -179,35 +203,25 @@ fn acknowledge_warning(
         return Ok(());
     }
 
-    let Some(window) = app.get_window("main") else {
-        return Err("主窗口未就绪".into());
-    };
+    // Return immediately so the warn webview invoke does not deadlock.
+    // Reveal pre-created chrome/biz on the main thread after a short delay.
+    let app_bg = app.clone();
+    let g = (*guard_state).clone();
+    let c = (*capture_state).clone();
+    let s = (*session).clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let app_main = app_bg.clone();
+        let g2 = g.clone();
+        let c2 = c.clone();
+        let s2 = s.clone();
+        if let Err(e) = app_bg.run_on_main_thread(move || {
+            reveal_interview_ui(&app_main, &g2, &c2, &s2);
+        }) {
+            eprintln!("[session] reveal failed: {e}");
+        }
+    });
 
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let size = window.inner_size().map_err(|e| e.to_string())?;
-    let logical = size.to_logical::<f64>(scale);
-
-    // Create chrome + join page FIRST, then only hide the warning webview.
-    // Closing "warn" inside this invoke (it is the caller) deadlocks the UI:
-    // blank page and the window can no longer be closed.
-    start_interview_shell(&window, logical.width, logical.height)?;
-    hide_warn_webview(&window);
-    session.mark_interview_started();
-
-    #[cfg(windows)]
-    {
-        let g = (*guard_state).clone();
-        let c = (*capture_state).clone();
-        guard::start_guard_loop(app.clone(), g.clone());
-        guard::start_layout_lock_loop(g.clone());
-        guard::start_meet_auto_loop(app.clone(), g.clone());
-        g.set_enabled(true);
-        g.set_pull_back(false);
-        c.set_enabled(true);
-        let _ = capture::capture_once(&c);
-    }
-
-    let _ = app.emit("session://ready", true);
     Ok(())
 }
 
@@ -377,7 +391,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(guard_state.clone())
         .manage(capture_state.clone())
-        .manage(session_state)
+        .manage(session_state.clone())
         .invoke_handler(tauri::generate_handler![
             get_guard_status,
             set_guard_enabled,
@@ -394,6 +408,9 @@ pub fn run() {
         .setup(move |app| {
             let width = 1180.0;
             let height = 860.0;
+            let join_url = Url::parse(DEFAULT_JOIN_URL).expect("valid join url");
+            let chrome_h = CHROME_H;
+            let biz_h = (height - chrome_h).max(120.0);
 
             let window = tauri::window::WindowBuilder::new(app, "main")
                 .title("Interview3S")
@@ -401,7 +418,18 @@ pub fn run() {
                 .min_inner_size(900.0, 640.0)
                 .build()?;
 
-            // Consent / warning first — interview shell starts after acknowledge.
+            // Pre-create shell under the warning page so acknowledge never add_child
+            // from inside a webview invoke (that deadlocks / freezes "正在进入").
+            let _chrome = window.add_child(
+                WebviewBuilder::new("chrome", WebviewUrl::App("guard.html".into())),
+                LogicalPosition::new(-10_000.0, -10_000.0),
+                LogicalSize::new(width, chrome_h),
+            )?;
+            let _biz = window.add_child(
+                build_biz_webview(join_url),
+                LogicalPosition::new(-10_000.0, -10_000.0),
+                LogicalSize::new(width, biz_h),
+            )?;
             let _warn = window.add_child(
                 WebviewBuilder::new("warn", WebviewUrl::App("warning.html".into())),
                 LogicalPosition::new(0.0, 0.0),
@@ -409,11 +437,17 @@ pub fn run() {
             )?;
 
             let window_for_events = window.clone();
+            let session_for_events = session_state.clone();
             window.on_window_event(move |event| {
                 if let WindowEvent::Resized(size) = event {
                     let scale = window_for_events.scale_factor().unwrap_or(1.0);
                     let logical = size.to_logical::<f64>(scale);
-                    layout_for_state(&window_for_events, logical.width, logical.height);
+                    layout_for_state(
+                        &window_for_events,
+                        logical.width,
+                        logical.height,
+                        session_for_events.is_acknowledged(),
+                    );
                 }
             });
 
