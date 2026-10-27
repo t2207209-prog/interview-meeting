@@ -53,7 +53,7 @@ function render(s: GuardStatus) {
   if (hintEl) {
     if (s.layoutLocked) {
       hintEl.textContent =
-        "分屏已锁定：本应用固定左侧；腾讯会议弹窗已放行，主窗拖走才会拉回。";
+        "分屏已锁定：禁止拖动/最小化；腾讯会议弹窗可显示，关「置顶」解除锁定。";
       hintEl.dataset.warn = "1";
     } else if ((s.monitorCount ?? 1) > 1) {
       hintEl.textContent = "多显示器：建议只保留一块屏幕。";
