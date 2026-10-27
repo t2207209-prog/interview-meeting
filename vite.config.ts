@@ -17,6 +17,7 @@ export default defineConfig(() => ({
         index: path.resolve(root, "index.html"),
         guard: path.resolve(root, "guard.html"),
         warning: path.resolve(root, "warning.html"),
+        face: path.resolve(root, "face.html"),
       },
     },
   },

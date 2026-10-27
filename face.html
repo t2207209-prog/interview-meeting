@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>人脸核验</title>
+    <link rel="stylesheet" href="/src/face.css" />
+    <script type="module" src="/src/face.ts" defer></script>
+  </head>
+  <body>
+    <main class="face-shell">
+      <div class="face-panel">
+        <p class="brand">Interview3S</p>
+        <h1>考生人脸抓拍与活体检测</h1>
+        <p class="lead">
+          Demo 流程：开启摄像头 → 按提示完成活体动作 → 抓拍人脸。当前不对接后台，仅本地演示。
+        </p>
+
+        <div class="stage">
+          <div class="preview-wrap" data-state="idle">
+            <video id="cam" playsinline muted autoplay></video>
+            <canvas id="snap" hidden></canvas>
+            <img id="shot" alt="抓拍预览" hidden />
+            <div class="oval" aria-hidden="true"></div>
+            <div class="scan" aria-hidden="true"></div>
+            <p id="cam-fallback" class="cam-fallback" hidden>
+              无法打开摄像头（权限被拒绝或设备不可用）。仍可继续完成 Demo 流程。
+            </p>
+          </div>
+
+          <aside class="side">
+            <ol class="steps" id="steps">
+              <li data-step="align" data-state="pending">正对镜头，面部入框</li>
+              <li data-step="blink" data-state="pending">自然眨眼一次</li>
+              <li data-step="turn" data-state="pending">缓慢左右转头</li>
+              <li data-step="snap" data-state="pending">人脸抓拍确认</li>
+            </ol>
+            <p id="tip" class="tip">点击下方按钮开始检测</p>
+            <div class="progress"><span id="bar"></span></div>
+            <p id="error" class="error" hidden></p>
+            <div class="actions">
+              <button id="start" type="button">开始活体检测</button>
+              <button id="retry" type="button" hidden>重新检测</button>
+              <button id="done" type="button" hidden disabled>验证通过，进入面试</button>
+            </div>
+            <p class="demo-note">* Demo：动作为引导计时模拟，非真实算法识别。</p>
+          </aside>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>

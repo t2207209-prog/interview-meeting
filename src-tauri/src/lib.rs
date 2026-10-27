@@ -14,11 +14,19 @@ const DEFAULT_JOIN_URL: &str =
 
 const CHROME_H: f64 = 100.0;
 
-fn layout_warn(window: &tauri::Window, width: f64, height: f64) {
-    if let Some(warn) = window.get_webview("warn") {
-        let _ = warn.set_position(LogicalPosition::new(0.0, 0.0));
-        let _ = warn.set_size(LogicalSize::new(width, height));
+fn layout_full_overlay(window: &tauri::Window, id: &str, width: f64, height: f64) {
+    if let Some(wv) = window.get_webview(id) {
+        let _ = wv.set_position(LogicalPosition::new(0.0, 0.0));
+        let _ = wv.set_size(LogicalSize::new(width, height));
     }
+}
+
+fn layout_warn(window: &tauri::Window, width: f64, height: f64) {
+    layout_full_overlay(window, "warn", width, height);
+}
+
+fn layout_face(window: &tauri::Window, width: f64, height: f64) {
+    layout_full_overlay(window, "face", width, height);
 }
 
 fn layout_main(window: &tauri::Window, width: f64, height: f64) {
@@ -44,21 +52,54 @@ fn collapse_shell(window: &tauri::Window) {
     }
 }
 
-fn hide_warn_webview(window: &tauri::Window) {
-    if let Some(warn) = window.get_webview("warn") {
-        let _ = warn.set_position(LogicalPosition::new(-10_000.0, -10_000.0));
-        let _ = warn.set_size(LogicalSize::new(1.0, 1.0));
+fn hide_overlay(window: &tauri::Window, id: &str) {
+    if let Some(wv) = window.get_webview(id) {
+        let _ = wv.set_position(LogicalPosition::new(-10_000.0, -10_000.0));
+        let _ = wv.set_size(LogicalSize::new(1.0, 1.0));
     }
 }
 
-fn layout_for_state(window: &tauri::Window, width: f64, height: f64, ready: bool) {
-    if ready {
+fn hide_warn_webview(window: &tauri::Window) {
+    hide_overlay(window, "warn");
+}
+
+fn hide_face_webview(window: &tauri::Window) {
+    hide_overlay(window, "face");
+}
+
+fn layout_for_state(
+    window: &tauri::Window,
+    width: f64,
+    height: f64,
+    session: &session::SessionState,
+) {
+    if session.is_interview_ready() {
         layout_main(window, width, height);
         hide_warn_webview(window);
+        hide_face_webview(window);
+    } else if session.is_acknowledged() {
+        layout_face(window, width, height);
+        hide_warn_webview(window);
+        collapse_shell(window);
     } else {
         layout_warn(window, width, height);
+        hide_face_webview(window);
         collapse_shell(window);
     }
+}
+
+fn reveal_face_ui(app: &tauri::AppHandle) {
+    let Some(window) = app.get_window("main") else {
+        return;
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    let logical = size.to_logical::<f64>(scale);
+    hide_warn_webview(&window);
+    collapse_shell(&window);
+    layout_face(&window, logical.width, logical.height);
 }
 
 fn reveal_interview_ui(
@@ -77,6 +118,7 @@ fn reveal_interview_ui(
     let logical = size.to_logical::<f64>(scale);
     layout_main(&window, logical.width, logical.height);
     hide_warn_webview(&window);
+    hide_face_webview(&window);
 
     if session.try_start_interview() {
         #[cfg(windows)]
@@ -196,15 +238,41 @@ fn open_capture_dir(state: tauri::State<'_, capture::CaptureState>) -> Result<St
 fn acknowledge_warning(
     app: tauri::AppHandle,
     session: tauri::State<'_, session::SessionState>,
-    guard_state: tauri::State<'_, guard::GuardState>,
-    capture_state: tauri::State<'_, capture::CaptureState>,
 ) -> Result<(), String> {
     if !session.mark_acknowledged() {
         return Ok(());
     }
 
     // Return immediately so the warn webview invoke does not deadlock.
-    // Reveal pre-created chrome/biz on the main thread after a short delay.
+    // Next gate: face capture / liveness demo page.
+    let app_bg = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let app_main = app_bg.clone();
+        if let Err(e) = app_bg.run_on_main_thread(move || {
+            reveal_face_ui(&app_main);
+        }) {
+            eprintln!("[session] reveal face failed: {e}");
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+fn complete_face_verify(
+    app: tauri::AppHandle,
+    session: tauri::State<'_, session::SessionState>,
+    guard_state: tauri::State<'_, guard::GuardState>,
+    capture_state: tauri::State<'_, capture::CaptureState>,
+) -> Result<(), String> {
+    if !session.is_acknowledged() {
+        return Err("请先确认监考声明".into());
+    }
+    if !session.mark_face_verified() {
+        return Ok(());
+    }
+
     let app_bg = app.clone();
     let g = (*guard_state).clone();
     let c = (*capture_state).clone();
@@ -218,7 +286,7 @@ fn acknowledge_warning(
         if let Err(e) = app_bg.run_on_main_thread(move || {
             reveal_interview_ui(&app_main, &g2, &c2, &s2);
         }) {
-            eprintln!("[session] reveal failed: {e}");
+            eprintln!("[session] reveal interview failed: {e}");
         }
     });
 
@@ -403,7 +471,8 @@ pub fn run() {
             set_capture_enabled,
             capture_now,
             open_capture_dir,
-            acknowledge_warning
+            acknowledge_warning,
+            complete_face_verify
         ])
         .setup(move |app| {
             let width = 1180.0;
@@ -430,6 +499,11 @@ pub fn run() {
                 LogicalPosition::new(-10_000.0, -10_000.0),
                 LogicalSize::new(width, biz_h),
             )?;
+            let _face = window.add_child(
+                WebviewBuilder::new("face", WebviewUrl::App("face.html".into())),
+                LogicalPosition::new(-10_000.0, -10_000.0),
+                LogicalSize::new(width, height),
+            )?;
             let _warn = window.add_child(
                 WebviewBuilder::new("warn", WebviewUrl::App("warning.html".into())),
                 LogicalPosition::new(0.0, 0.0),
@@ -446,7 +520,7 @@ pub fn run() {
                         &window_for_events,
                         logical.width,
                         logical.height,
-                        session_for_events.is_acknowledged(),
+                        &session_for_events,
                     );
                 }
             });
