@@ -4,6 +4,7 @@ use std::sync::Arc;
 #[derive(Default)]
 struct SessionInner {
     acknowledged: bool,
+    interview_started: bool,
 }
 
 #[derive(Clone, Default)]
@@ -12,6 +13,11 @@ pub struct SessionState {
 }
 
 impl SessionState {
+    pub fn is_acknowledged(&self) -> bool {
+        self.inner.lock().acknowledged
+    }
+
+    /// First call returns true; later calls return false.
     pub fn mark_acknowledged(&self) -> bool {
         let mut g = self.inner.lock();
         if g.acknowledged {
@@ -21,8 +27,13 @@ impl SessionState {
         true
     }
 
-    pub fn mark_interview_started(&self) {
-        // Reserved for future session phases; acknowledge already gates entry.
-        let _ = self;
+    /// First call returns true; later calls return false.
+    pub fn try_start_interview(&self) -> bool {
+        let mut g = self.inner.lock();
+        if g.interview_started {
+            return false;
+        }
+        g.interview_started = true;
+        true
     }
 }
