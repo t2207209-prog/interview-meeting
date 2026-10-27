@@ -52,7 +52,8 @@ function render(s: GuardStatus) {
   if (monitorsEl) monitorsEl.textContent = String(s.monitorCount ?? 1);
   if (hintEl) {
     if (s.layoutLocked) {
-      hintEl.textContent = "分屏已锁定：两窗铺满主屏高度并置顶，拖动会被拉回。";
+      hintEl.textContent =
+        "分屏已锁定：本应用固定左侧；腾讯会议弹窗已放行，主窗拖走才会拉回。";
       hintEl.dataset.warn = "1";
     } else if ((s.monitorCount ?? 1) > 1) {
       hintEl.textContent = "多显示器：建议只保留一块屏幕。";
