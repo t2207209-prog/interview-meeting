@@ -22,7 +22,6 @@ type CaptureStatus = {
   saveDir: string;
 };
 
-const enabledText = document.querySelector<HTMLElement>("#enabled-text");
 const violationsEl = document.querySelector<HTMLElement>("#violations");
 const foregroundEl = document.querySelector<HTMLElement>("#foreground");
 const titleEl = document.querySelector<HTMLElement>("#title");
@@ -30,16 +29,18 @@ const monitorsEl = document.querySelector<HTMLElement>("#monitors");
 const shotsEl = document.querySelector<HTMLElement>("#shots");
 const hintEl = document.querySelector<HTMLElement>("#hint");
 const statusEl = document.querySelector<HTMLElement>("#status");
-const toggleGuardBtn = document.querySelector<HTMLButtonElement>("#toggle-guard");
-const togglePullBtn = document.querySelector<HTMLButtonElement>("#toggle-pull");
-const tileBtn = document.querySelector<HTMLButtonElement>("#tile");
-const topmostBtn = document.querySelector<HTMLButtonElement>("#topmost");
-const toggleCaptureBtn = document.querySelector<HTMLButtonElement>("#toggle-capture");
+const lampGuard = document.querySelector<HTMLElement>("#lamp-guard");
+const lampPull = document.querySelector<HTMLElement>("#lamp-pull");
+const lampTile = document.querySelector<HTMLElement>("#lamp-tile");
+const lampTopmost = document.querySelector<HTMLElement>("#lamp-topmost");
+const lampCapture = document.querySelector<HTMLElement>("#lamp-capture");
 
 let pullBack = false;
 let topmost = false;
 let enabled = true;
 let captureOn = true;
+let layoutLocked = false;
+let ensuring = false;
 
 function setStatus(msg: string, isError = false) {
   if (!statusEl) return;
@@ -47,11 +48,17 @@ function setStatus(msg: string, isError = false) {
   statusEl.dataset.state = isError ? "error" : "ok";
 }
 
+function setLamp(el: HTMLElement | null, on: boolean, onText: string, offText: string) {
+  if (!el) return;
+  el.dataset.on = on ? "1" : "0";
+  el.textContent = on ? onText : offText;
+}
+
 function render(s: GuardStatus) {
   enabled = !!s.enabled;
   pullBack = !!s.pullBack;
+  layoutLocked = !!s.layoutLocked;
   if (typeof s.topmost === "boolean") topmost = s.topmost;
-  if (enabledText) enabledText.textContent = enabled ? "守卫开" : "守卫关";
   if (violationsEl) violationsEl.textContent = String(s.violations ?? 0);
   if (foregroundEl) {
     foregroundEl.textContent = s.lastProcess || "—";
@@ -62,10 +69,16 @@ function render(s: GuardStatus) {
     titleEl.title = s.lastTitle || "";
   }
   if (monitorsEl) monitorsEl.textContent = String(s.monitorCount ?? 1);
+
+  setLamp(lampGuard, enabled, "守卫开", "守卫关");
+  setLamp(lampPull, pullBack, "强拉开", "强拉关");
+  setLamp(lampTile, layoutLocked, "并排开", "并排关");
+  setLamp(lampTopmost, topmost, "置顶开", "置顶关");
+
   if (hintEl) {
     if (s.layoutLocked) {
       hintEl.textContent =
-        "分屏已锁定（会议打开自动）：禁止拖动/最小化；关会议或关「置顶」解除。";
+        "分屏已锁定：禁止拖动/最小化；腾讯会议弹窗可显示，关闭会议后自动解除。";
       hintEl.dataset.warn = "1";
     } else if ((s.monitorCount ?? 1) > 1) {
       hintEl.textContent = "多显示器：建议只保留一块屏幕。";
@@ -74,91 +87,62 @@ function render(s: GuardStatus) {
       hintEl.textContent = "前台不在白名单（本应用 / 腾讯会议）。";
       hintEl.dataset.warn = "1";
     } else {
-      hintEl.textContent =
-        "会议打开自动分屏置顶；默认定时截屏存本地（可关）。";
+      hintEl.textContent = "监考功能保持开启；打开腾讯会议后自动并排并置顶。";
       hintEl.dataset.warn = "0";
     }
   }
-  if (toggleGuardBtn) toggleGuardBtn.textContent = enabled ? "关闭守卫" : "开启守卫";
-  if (togglePullBtn) togglePullBtn.textContent = `强拉：${pullBack ? "开" : "关"}`;
-  if (topmostBtn) topmostBtn.textContent = `置顶：${topmost ? "开" : "关"}`;
 }
 
 function renderCapture(s: CaptureStatus) {
   captureOn = !!s.enabled;
   if (shotsEl) shotsEl.textContent = String(s.count ?? 0);
-  if (toggleCaptureBtn) {
-    toggleCaptureBtn.textContent = `截屏：${captureOn ? "开" : "关"}`;
-  }
+  setLamp(lampCapture, captureOn, "截屏开", "截屏关");
   if (s.lastError) {
     setStatus(`截屏失败：${s.lastError}`, true);
   }
 }
 
+/** Keep core anti-cheat features forced on; UI has no toggles. */
+async function ensureAlwaysOn(s: GuardStatus, c?: CaptureStatus) {
+  if (ensuring) return;
+  ensuring = true;
+  try {
+    if (!s.enabled) {
+      await invoke<GuardStatus>("set_guard_enabled", { enabled: true });
+    }
+    if (!s.pullBack) {
+      await invoke<GuardStatus>("set_pull_back", { enabled: true });
+    }
+    if (c && !c.enabled) {
+      await invoke<CaptureStatus>("set_capture_enabled", { enabled: true });
+    }
+  } catch {
+    /* ignore */
+  } finally {
+    ensuring = false;
+  }
+}
+
 async function refresh() {
   const s = await invoke<GuardStatus>("get_guard_status");
-  render(s);
+  let c: CaptureStatus | undefined;
   try {
-    const c = await invoke<CaptureStatus>("get_capture_status");
-    renderCapture(c);
+    c = await invoke<CaptureStatus>("get_capture_status");
   } catch {
     /* non-windows / not ready */
+  }
+  await ensureAlwaysOn(s, c);
+  const s2 = await invoke<GuardStatus>("get_guard_status");
+  render(s2);
+  try {
+    const c2 = await invoke<CaptureStatus>("get_capture_status");
+    renderCapture(c2);
+  } catch {
+    /* ignore */
   }
 }
 
 async function boot() {
-  toggleGuardBtn?.addEventListener("click", async () => {
-    const s = await invoke<GuardStatus>("set_guard_enabled", { enabled: !enabled });
-    render(s);
-    setStatus(enabled ? "守卫已开启" : "守卫已关闭");
-  });
-
-  togglePullBtn?.addEventListener("click", async () => {
-    const s = await invoke<GuardStatus>("set_pull_back", { enabled: !pullBack });
-    render(s);
-  });
-
-  tileBtn?.addEventListener("click", async () => {
-    try {
-      setStatus(await invoke<string>("tile_with_wemeet"));
-    } catch (e) {
-      setStatus(String(e), true);
-    }
-  });
-
-  topmostBtn?.addEventListener("click", async () => {
-    const next = !topmost;
-    try {
-      await invoke("set_main_topmost", { topmost: next });
-      topmost = next;
-      if (topmostBtn) topmostBtn.textContent = `置顶：${topmost ? "开" : "关"}`;
-      setStatus(
-        topmost
-          ? "已置顶；若已分屏则同时锁定位置/高度"
-          : "已取消置顶并解除分屏锁定",
-      );
-      await refresh();
-    } catch (e) {
-      setStatus(String(e), true);
-    }
-  });
-
-  toggleCaptureBtn?.addEventListener("click", async () => {
-    try {
-      const c = await invoke<CaptureStatus>("set_capture_enabled", {
-        enabled: !captureOn,
-      });
-      renderCapture(c);
-      setStatus(
-        captureOn
-          ? `定时截屏已开启（每 ${c.intervalSecs || 30}s，仅存本地）`
-          : "定时截屏已关闭",
-      );
-    } catch (e) {
-      setStatus(String(e), true);
-    }
-  });
-
   await refresh();
   await listen<GuardStatus>("guard://status", (ev) => render(ev.payload));
   await listen<GuardStatus>("guard://auto-tiled", (ev) => {
