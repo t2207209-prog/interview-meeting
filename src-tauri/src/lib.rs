@@ -300,6 +300,7 @@ pub fn run() {
             {
                 guard::start_guard_loop(app.handle().clone(), guard_state.clone());
                 guard::start_layout_lock_loop(guard_state.clone());
+                guard::start_meet_auto_loop(app.handle().clone(), guard_state.clone());
                 guard_state.set_enabled(true);
                 guard_state.set_pull_back(false);
             }
