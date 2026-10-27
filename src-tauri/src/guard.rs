@@ -17,8 +17,9 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetForegroundWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
-    IsIconic, IsWindow, IsWindowVisible, MoveWindow, SetForegroundWindow, SetWindowPos,
-    HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    IsIconic, IsWindow, IsWindowVisible, MoveWindow, SetForegroundWindow, SetWindowPos, ShowWindow,
+    HWND_NOTOPMOST, HWND_TOPMOST, SW_RESTORE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_SHOWWINDOW,
 };
 
 const POLL_MS: u64 = 350;
@@ -311,6 +312,19 @@ unsafe fn promote_topmost_only(hwnd: HWND) {
     );
 }
 
+/// While layout is locked, neither pane may stay minimized.
+unsafe fn ensure_not_minimized(hwnd: HWND) -> bool {
+    if hwnd.is_null() || IsWindow(hwnd) == 0 {
+        return false;
+    }
+    if IsIconic(hwnd) != 0 {
+        ShowWindow(hwnd, SW_RESTORE);
+        true
+    } else {
+        false
+    }
+}
+
 /// True when foreground is a Tencent Meeting window other than the locked main meet pane
 /// (settings / permission / confirm dialogs, etc.).
 unsafe fn active_meet_popup(main_meet: HWND) -> Option<HWND> {
@@ -344,10 +358,11 @@ pub fn start_layout_lock_loop(state: GuardState) {
             if let Some(pane) = main {
                 let hwnd = pane.hwnd as HWND;
                 if IsWindow(hwnd) != 0 {
+                    let was_min = ensure_not_minimized(hwnd);
                     let drifted = current_rect(hwnd)
                         .map(|r| !rect_eq(&r, &pane.rect))
                         .unwrap_or(true);
-                    if drifted {
+                    if was_min || drifted {
                         force_pane(hwnd, pane.rect, topmost);
                     } else if topmost {
                         promote_topmost_only(hwnd);
@@ -362,18 +377,20 @@ pub fn start_layout_lock_loop(state: GuardState) {
                     continue;
                 }
 
+                // Never allow the main meet pane to stay minimized while locked.
+                let was_min = ensure_not_minimized(hwnd);
+
                 if let Some(popup) = active_meet_popup(hwnd) {
                     // Let the popup show above everything; do NOT MoveWindow the main meet frame.
                     promote_topmost_only(popup);
                     continue;
                 }
 
-                // Soft-snap only the main meeting window if the user dragged it away.
-                // Avoid forcing every tick (that was killing meet popups / z-order).
+                // Soft-snap only the main meeting window if minimized or dragged away.
                 let drifted = current_rect(hwnd)
                     .map(|r| !rect_eq(&r, &pane.rect))
                     .unwrap_or(false);
-                if drifted {
+                if was_min || drifted {
                     force_pane(hwnd, pane.rect, topmost);
                 } else if topmost {
                     promote_topmost_only(hwnd);
@@ -446,10 +463,13 @@ pub fn tile_with_tencent_meeting(app: &AppHandle, state: &GuardState) -> Result<
         };
         let hwnd_main = hwnd_main_raw.0 as isize as HWND;
 
-        // Full-height dual cover + topmost + lock against drag.
+        // Full-height dual cover + topmost + lock against drag / minimize.
+        ensure_not_minimized(hwnd_main);
+        ensure_not_minimized(meet);
         force_pane(hwnd_main, left_rect, true);
         force_pane(meet, right_rect, true);
         let _ = main.set_always_on_top(true);
+        let _ = main.set_minimizable(false);
 
         {
             let mut g = state.inner.lock();
@@ -468,7 +488,7 @@ pub fn tile_with_tencent_meeting(app: &AppHandle, state: &GuardState) -> Result<
         let _ = app.emit("guard://status", &state.status());
 
         Ok(format!(
-            "已锁定分屏并置顶：铺满主屏高度，禁止拖动下移（会议窗 {} 个）",
+            "已锁定分屏并置顶：铺满主屏、禁止拖动/最小化（会议窗 {} 个）",
             data.handles.len()
         ))
     }
@@ -481,27 +501,28 @@ pub fn set_main_topmost(app: &AppHandle, state: &GuardState, topmost: bool) -> R
     main.set_always_on_top(topmost)
         .map_err(|e| e.to_string())?;
 
-    let (main_pane, meet_pane) = {
+    let (main_pane, meet_pane, locked) = {
         let mut g = state.inner.lock();
         g.topmost = topmost;
-        // Turning topmost on while already tiled keeps lock; turning off releases lock
-        // so the user can move windows again.
+        // Turning topmost off releases lock so the user can move / minimize again.
         if !topmost {
             g.layout_locked = false;
         } else if g.main_pane.is_some() && g.meet_pane.is_some() {
             g.layout_locked = true;
         }
-        (g.main_pane, g.meet_pane)
+        (g.main_pane, g.meet_pane, g.layout_locked)
     };
+    let _ = main.set_minimizable(!locked);
 
     unsafe {
         if let Some(pane) = main_pane {
+            ensure_not_minimized(pane.hwnd as HWND);
             force_pane(pane.hwnd as HWND, pane.rect, topmost);
         }
         if let Some(pane) = meet_pane {
+            ensure_not_minimized(pane.hwnd as HWND);
             force_pane(pane.hwnd as HWND, pane.rect, topmost);
         }
-        // If unlocking and no stored panes, still clear topmost on main hwnd.
         if !topmost {
             if let Ok(hwnd_main) = main.hwnd() {
                 SetWindowPos(
