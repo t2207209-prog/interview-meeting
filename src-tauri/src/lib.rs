@@ -55,26 +55,34 @@ fn set_pull_back(enabled: bool, state: tauri::State<'_, guard::GuardState>) -> g
 }
 
 #[tauri::command]
-fn tile_with_wemeet(app: tauri::AppHandle) -> Result<String, String> {
+fn tile_with_wemeet(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, guard::GuardState>,
+) -> Result<String, String> {
     #[cfg(windows)]
     {
-        guard::tile_with_tencent_meeting(&app)
+        guard::tile_with_tencent_meeting(&app, &state)
     }
     #[cfg(not(windows))]
     {
-        let _ = app;
+        let _ = (app, state);
         Err("窗口分屏仅支持 Windows".into())
     }
 }
 
 #[tauri::command]
-fn set_main_topmost(app: tauri::AppHandle, topmost: bool) -> Result<(), String> {
+fn set_main_topmost(
+    app: tauri::AppHandle,
+    topmost: bool,
+    state: tauri::State<'_, guard::GuardState>,
+) -> Result<(), String> {
     #[cfg(windows)]
     {
-        guard::set_main_topmost(&app, topmost)
+        guard::set_main_topmost(&app, &state, topmost)
     }
     #[cfg(not(windows))]
     {
+        let _ = state;
         if let Some(main) = app.get_window("main") {
             main.set_always_on_top(topmost).map_err(|e| e.to_string())?;
         }
@@ -291,6 +299,7 @@ pub fn run() {
             #[cfg(windows)]
             {
                 guard::start_guard_loop(app.handle().clone(), guard_state.clone());
+                guard::start_layout_lock_loop(guard_state.clone());
                 guard_state.set_enabled(true);
                 guard_state.set_pull_back(false);
             }
