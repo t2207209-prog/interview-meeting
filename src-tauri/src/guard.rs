@@ -290,7 +290,45 @@ pub fn start_guard_loop(app: AppHandle, state: GuardState) {
     });
 }
 
-/// Continuously snap dual panes back if the user tries to drag/resize them while locked.
+fn is_meet_stem(stem: &str) -> bool {
+    stem.contains("wemeet")
+        || stem.contains("tencentmeeting")
+        || stem.contains("wechatmeeting")
+}
+
+unsafe fn promote_topmost_only(hwnd: HWND) {
+    if hwnd.is_null() || IsWindow(hwnd) == 0 {
+        return;
+    }
+    SetWindowPos(
+        hwnd,
+        HWND_TOPMOST,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSIZE | SWP_NOMOVE,
+    );
+}
+
+/// True when foreground is a Tencent Meeting window other than the locked main meet pane
+/// (settings / permission / confirm dialogs, etc.).
+unsafe fn active_meet_popup(main_meet: HWND) -> Option<HWND> {
+    let fg = GetForegroundWindow();
+    if fg.is_null() || fg == main_meet {
+        return None;
+    }
+    let stem = exe_stem(&process_image_path(fg));
+    if is_meet_stem(&stem) {
+        Some(fg)
+    } else {
+        None
+    }
+}
+
+/// Continuously snap panes while locked.
+/// - Our app: always force left full-height rect.
+/// - Tencent Meeting: allow its own popups; only soft-snap the main meet window when idle.
 pub fn start_layout_lock_loop(state: GuardState) {
     thread::spawn(move || loop {
         thread::sleep(Duration::from_millis(LAYOUT_POLL_MS));
@@ -302,26 +340,43 @@ pub fn start_layout_lock_loop(state: GuardState) {
             continue;
         }
         unsafe {
+            // 1) Always keep our interview window fixed (covers left desktop).
             if let Some(pane) = main {
                 let hwnd = pane.hwnd as HWND;
                 if IsWindow(hwnd) != 0 {
                     let drifted = current_rect(hwnd)
                         .map(|r| !rect_eq(&r, &pane.rect))
                         .unwrap_or(true);
-                    if drifted || topmost {
+                    if drifted {
                         force_pane(hwnd, pane.rect, topmost);
+                    } else if topmost {
+                        promote_topmost_only(hwnd);
                     }
                 }
             }
+
+            // 2) Tencent Meeting: pass-through for its dialogs / child windows.
             if let Some(pane) = meet {
                 let hwnd = pane.hwnd as HWND;
-                if IsWindow(hwnd) != 0 {
-                    let drifted = current_rect(hwnd)
-                        .map(|r| !rect_eq(&r, &pane.rect))
-                        .unwrap_or(true);
-                    if drifted || topmost {
-                        force_pane(hwnd, pane.rect, topmost);
-                    }
+                if IsWindow(hwnd) == 0 {
+                    continue;
+                }
+
+                if let Some(popup) = active_meet_popup(hwnd) {
+                    // Let the popup show above everything; do NOT MoveWindow the main meet frame.
+                    promote_topmost_only(popup);
+                    continue;
+                }
+
+                // Soft-snap only the main meeting window if the user dragged it away.
+                // Avoid forcing every tick (that was killing meet popups / z-order).
+                let drifted = current_rect(hwnd)
+                    .map(|r| !rect_eq(&r, &pane.rect))
+                    .unwrap_or(false);
+                if drifted {
+                    force_pane(hwnd, pane.rect, topmost);
+                } else if topmost {
+                    promote_topmost_only(hwnd);
                 }
             }
         }
