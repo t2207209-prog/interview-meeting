@@ -1,6 +1,6 @@
 [package]
 name = "interview-meeting"
-version = "0.3.4"
+version = "0.3.5"
 description = "Interview Meeting MVP - single window (guard bar + join page) + Tencent Meeting"
 authors = ["you"]
 edition = "2021"
