@@ -10,7 +10,7 @@ use tauri::{
 use url::Url;
 
 const DEFAULT_JOIN_URL: &str =
-    "https://ms.symsun.com/interview3s-web/views/interview/meeting/meeting_join.html?token=inv-c507cc8aca8a448d";
+    "https://ms.symsun.com/interview3s-web/views/interview/meeting/meeting_join.html?token=inv-2c41c7998ac947a1";
 
 const CHROME_H: f64 = 100.0;
 
